@@ -1,4 +1,79 @@
-# Action catalog — costs and capacity requirements — populated in Phase 2+
-# Each action: id, channel, base_cost, capacity_unit, requires_human, etc.
+# Action catalog — costs and capacity requirements
 
-actions: []
+actions:
+  - id: retry_payment
+    label: Retry payment
+    channel: system
+    base_cost: 1
+    capacity_unit: retry
+    requires_human: false
+
+  - id: wait_and_retry
+    label: Wait and retry
+    channel: system
+    base_cost: 1
+    capacity_unit: retry
+    requires_human: false
+
+  - id: send_email
+    label: Send email reminder
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: send_whatsapp
+    label: Send WhatsApp message
+    channel: whatsapp
+    base_cost: 5
+    capacity_unit: contact
+    requires_human: false
+
+  - id: send_sms
+    label: Send SMS
+    channel: sms
+    base_cost: 3
+    capacity_unit: contact
+    requires_human: false
+
+  - id: voice_call
+    label: Outbound voice call
+    channel: voice
+    base_cost: 50
+    capacity_unit: voice_call
+    requires_human: false
+
+  - id: offer_discount
+    label: Offer discount incentive
+    channel: system
+    base_cost: 0
+    capacity_unit: discount
+    requires_human: false
+
+  - id: request_payment_method_update
+    label: Request payment method update
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: human_escalation
+    label: Human escalation
+    channel: human
+    base_cost: 500
+    capacity_unit: human_hour
+    requires_human: true
+
+  - id: track_promise_to_pay
+    label: Track promise-to-pay
+    channel: system
+    base_cost: 0
+    capacity_unit: none
+    requires_human: false
+
+  - id: defer
+    label: Defer due to capacity
+    channel: system
+    base_cost: 0
+    capacity_unit: none
+    requires_human: false

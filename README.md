@@ -30,4 +30,21 @@ pip install -e ".[dev]"
 
 ## Status
 
-Repository scaffold only. Implementation follows phased rollout (Phase 1: synthetic data — not yet started).
+Phase 1 complete: synthetic data generator, SQLite schema, configs, hidden `p_pay_anyway`.
+
+### Generate dataset
+
+```bash
+podium-generate
+# or
+python scripts/generate_data.py
+# optional: python scripts/generate_data.py --seed 42 --db data/podium.db
+```
+
+Output: `data/podium.db` + `data/generated/dataset_summary.json`
+
+### Run tests
+
+```bash
+pytest tests/ -q
+```

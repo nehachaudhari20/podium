@@ -1,9 +1,18 @@
-# Merchant recovery policy — populated in Phase 2
-# See master spec: retries, cooldowns, contact limits, discount ceiling, opt-out, stopping rules
+# Merchant recovery policy (Phase 1 — used by generator constraints; enforced in Phase 2)
 
-max_retries: null
-min_contact_cooldown_hours: null
-max_contacts_per_7_days: null
-discount_ceiling_pct: null
-human_only_threshold_amount: null
+max_retries: 3
+min_contact_cooldown_hours: 24
+max_contacts_per_7_days: 3
+discount_ceiling_pct: 15
+human_only_threshold_amount: 50000
 opt_out_protection: true
+
+stopping_conditions:
+  - recovered
+  - exhausted
+  - opt_out
+  - window_expired
+
+escalation:
+  promise_missed_max_attempts: 2
+  receivable_days_overdue_escalate: 45

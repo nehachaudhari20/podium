@@ -1,9 +1,25 @@
 """CLI entry points for scripts (wired via pyproject.toml console scripts)."""
 
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from podium.ingestion.synthetic.generator import generate_and_persist
+
 
 def generate_data() -> None:
     """Generate synthetic dataset — Phase 1."""
-    raise NotImplementedError("Phase 1: synthetic data generator not yet implemented")
+    parser = argparse.ArgumentParser(description="Generate Podium synthetic recovery dataset")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="SQLite output path (default: data/podium.db)",
+    )
+    args = parser.parse_args()
+    generate_and_persist(seed=args.seed, db_path=args.db)
 
 
 def run_case() -> None:

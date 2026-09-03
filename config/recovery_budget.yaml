@@ -1,8 +1,17 @@
-# Recovery capacity budgets — populated in Phase 1
-# Contact slots, voice calls, human escalation hours, discount budget, retry pool
+# Recovery capacity budgets (Phase 1)
 
-contact_capacity_per_day: null
-voice_call_slots_per_day: null
-human_escalation_hours_per_day: null
-discount_budget_total: null
-retry_attempts_pool: null
+contact_capacity_per_day: 50
+voice_call_slots_per_day: 10
+human_escalation_hours_per_day: 8
+discount_budget_total: 25000
+retry_attempts_pool: 200
+
+# Per-action unit costs (INR) for economics reference
+unit_costs:
+  email: 2
+  whatsapp: 5
+  sms: 3
+  voice_call: 50
+  human_escalation_hour: 500
+  retry_attempt: 1
+  discount_pct_point: 100
