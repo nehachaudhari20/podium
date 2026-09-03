@@ -1,0 +1,2 @@
+-- Podium seed data (optional reference rows)
+-- Populated after Phase 1 synthetic data generation

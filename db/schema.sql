@@ -1,0 +1,2 @@
+-- Podium SQLite schema
+-- Full DDL defined in Phase 1 (customers, cases, payments, subscriptions, checkouts, invoices, etc.)

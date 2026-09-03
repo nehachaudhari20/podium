@@ -1,0 +1,8 @@
+# Recovery capacity budgets — populated in Phase 1
+# Contact slots, voice calls, human escalation hours, discount budget, retry pool
+
+contact_capacity_per_day: null
+voice_call_slots_per_day: null
+human_escalation_hours_per_day: null
+discount_budget_total: null
+retry_attempts_pool: null

@@ -1,0 +1,4 @@
+# Action catalog — costs and capacity requirements — populated in Phase 2+
+# Each action: id, channel, base_cost, capacity_unit, requires_human, etc.
+
+actions: []
