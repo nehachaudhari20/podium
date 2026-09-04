@@ -58,7 +58,7 @@ def test_history_represented_after_run(ctx_db):
     conn = ctx_db
     case_id = _subscription_case_id(conn, "network_timeout")
     reset_case_for_run(conn, case_id)
-    run_subscription_case(conn, case_id)
+    run_subscription_case(conn, case_id, intelligence_mode="deterministic")
 
     context = build_recovery_context(conn, case_id)
     assert len(context.recovery_history) >= 3

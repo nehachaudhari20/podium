@@ -42,6 +42,12 @@ def run_case() -> None:
         default=True,
         help="Reset case to detected before running (default: true)",
     )
+    parser.add_argument(
+        "--intelligence",
+        choices=("deterministic", "hybrid", "gemini"),
+        default=None,
+        help="Intelligence mode (default: INTELLIGENCE_MODE env or hybrid)",
+    )
     args = parser.parse_args()
 
     conn = connect(args.db)
@@ -65,7 +71,7 @@ def run_case() -> None:
     if args.reset:
         reset_case_for_run(conn, case_id)
 
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode=args.intelligence)
     conn.close()
     print(format_run_summary(result))
 

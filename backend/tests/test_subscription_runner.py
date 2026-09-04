@@ -58,7 +58,7 @@ def test_success_path_transient_failure(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "network_timeout")
     _prepare_test_case(conn, case_id)
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     assert result.recovered is True
     assert result.terminal_state == WorkflowState.RECOVERED.value
     assert result.state_history[:4] == ["detected", "diagnosed", "retry_scheduled", "waiting"]
@@ -70,7 +70,7 @@ def test_transient_failure_advances_simulated_time(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "transient_technical")
     _prepare_test_case(conn, case_id)
-    run_subscription_case(conn, case_id)
+    run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     events = load_audit_trail(conn, case_id)
     event_types = {e.event_type for e in events}
     assert "RETRY_SCHEDULED" in event_types
@@ -80,7 +80,7 @@ def test_exhaustion_path_repeated_failure(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "repeated_failure")
     _prepare_test_case(conn, case_id)
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     assert result.recovered is False
     assert result.terminal_state in (WorkflowState.EXHAUSTED.value, WorkflowState.ESCALATED.value)
     assert "retry_scheduled" in result.state_history
@@ -90,7 +90,7 @@ def test_insufficient_funds_recovers_after_retries(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "insufficient_funds")
     _prepare_test_case(conn, case_id)
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     assert result.recovered is True
     events = load_audit_trail(conn, case_id)
     assert "SIM_TIME_ADVANCED" in {e.event_type for e in events}
@@ -100,7 +100,7 @@ def test_expired_card_recovers_after_method_update(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "expired_card")
     _prepare_test_case(conn, case_id)
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     assert result.recovered is True
     assert "contacted" in result.state_history
     assert "payment_method_update" in [a.action_id for a in result.candidate_actions]
@@ -110,10 +110,10 @@ def test_audit_trail_complete(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "issuer_timeout")
     _prepare_test_case(conn, case_id)
-    result = run_subscription_case(conn, case_id)
+    result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     events = load_audit_trail(conn, case_id)
     event_types = {e.event_type for e in events}
-    assert {"DIAGNOSED", "ACTION_PROPOSED", "POLICY_CHECK", "ACTION_EXECUTED", "STATE_TRANSITION"} <= event_types
+    assert {"DIAGNOSED", "DECISION_PROPOSED", "POLICY_CHECK", "ACTION_EXECUTED", "STATE_TRANSITION"} <= event_types
     assert result.audit_event_count >= 5
 
 
@@ -161,7 +161,7 @@ def test_case_persisted_after_run(phase2_db):
     _, conn = phase2_db
     case_id = _find_subscription_case(conn, "issuer_timeout")
     _prepare_test_case(conn, case_id)
-    run_subscription_case(conn, case_id)
+    run_subscription_case(conn, case_id, intelligence_mode="deterministic")
     row = conn.execute(
         "SELECT workflow_state, status FROM recovery_cases WHERE case_id = ?",
         (case_id,),
