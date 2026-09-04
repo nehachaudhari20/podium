@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Phase 3A–3D end-to-end, including live Gemini API when configured."""
+"""Verify Phase 3A–3E end-to-end, including live Gemini API when configured."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from recovery.intelligence.gemini.strategy import GeminiStrategyIntelligence
 from recovery.models.recovery_context import assert_no_forbidden_fields
 from recovery.paths import DEFAULT_DB_PATH
 from recovery.pipeline.subscription_runner import run_subscription_case
+from recovery.audit.trail import load_audit_trail
 from recovery.state.reset import reset_case_for_run
 
 
@@ -100,6 +101,21 @@ def main() -> int:
             print("FAIL: unexpected decision source")
             return 1
         print("PASS: hybrid pipeline run completed with policy-validated action")
+
+        _section("Phase 3E — Agentic loop (observe → replan)")
+        reset_case_for_run(conn, case_id)
+        conn.commit()
+        result = run_subscription_case(conn, case_id, intelligence_mode="deterministic")
+        events = load_audit_trail(conn, case_id)
+        event_types = {e.event_type for e in events}
+        print(f"agent_steps:      {result.agent_steps}")
+        print(f"replan_count:     {result.replan_count}")
+        print(f"AGENT_OBSERVE:    {'AGENT_OBSERVE' in event_types}")
+        print(f"AGENT_REPLAN:     {'AGENT_REPLAN' in event_types}")
+        if result.agent_steps < 1 or "AGENT_OBSERVE" not in event_types:
+            print("FAIL: agentic loop did not run")
+            return 1
+        print("PASS: agentic recovery loop with observe/replan audit trail")
         return 0
     except Exception:
         traceback.print_exc()
