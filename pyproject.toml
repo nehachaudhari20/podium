@@ -17,6 +17,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.8",
 ]
+gemini = [
+    "google-genai>=1.0.0",
+]
 
 [project.scripts]
 podium-generate = "podium.cli:generate_data"

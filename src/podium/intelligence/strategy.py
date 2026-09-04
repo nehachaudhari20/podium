@@ -1,6 +1,6 @@
 """Rule-based recovery strategy — Phase 2 deterministic implementation.
 
-Phase 3 will replace ``generate_actions`` with Claude-backed candidate generation
+Phase 3 will replace ``generate_actions`` with Gemini-backed candidate generation
 using the same ``RecoveryAction`` interface.
 """
 

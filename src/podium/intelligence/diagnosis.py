@@ -1,6 +1,6 @@
 """Rule-based diagnosis — Phase 2 deterministic implementation.
 
-Phase 3 will replace ``diagnose`` with a Claude-backed implementation
+Phase 3 will replace ``diagnose`` with a Gemini-backed implementation
 using the same ``DiagnosisResult`` interface.
 """
 
@@ -57,6 +57,11 @@ FAILURE_TO_CAUSE: dict[str, tuple[str, float, str]] = {
         "Multiple prior failures suggest persistent recoverability issue.",
     ),
 }
+
+
+VALID_CAUSES = frozenset(
+    {entry[0] for entry in FAILURE_TO_CAUSE.values()} | {"unknown_failure"}
+)
 
 
 def diagnose(case: RecoveryCaseRuntime) -> DiagnosisResult:
