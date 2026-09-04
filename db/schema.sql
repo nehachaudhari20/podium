@@ -138,3 +138,21 @@ CREATE INDEX IF NOT EXISTS idx_cases_customer ON recovery_cases(customer_id);
 CREATE INDEX IF NOT EXISTS idx_cases_lane ON recovery_cases(lane);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON recovery_cases(status);
 CREATE INDEX IF NOT EXISTS idx_ground_truth_case ON case_ground_truth(case_id);
+
+-- Phase 2: full workflow audit trail (separate from recovery_action_log action records)
+CREATE TABLE IF NOT EXISTS audit_events (
+    event_id    TEXT PRIMARY KEY,
+    timestamp   TEXT NOT NULL,
+    case_id     TEXT NOT NULL REFERENCES recovery_cases(case_id),
+    customer_id TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    from_state  TEXT,
+    to_state    TEXT,
+    action      TEXT,
+    actor       TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    metadata    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_events(case_id);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
