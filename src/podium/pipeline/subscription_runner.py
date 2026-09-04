@@ -1,4 +1,4 @@
-"""Subscription-payment recovery pipeline — Phase 2 vertical slice."""
+"""Phase 2 — subscription recovery pipeline."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from podium.audit.trail import record_event
 from podium.execution.outcomes import is_terminal_state, process_outcome
+from podium.execution.sim_clock import SimulatedClock
 from podium.execution.simulator import simulate_execution
 from podium.ingestion.customer_loader import load_customer_context
 from podium.ingestion.runtime_loader import load_case_by_id
@@ -15,12 +16,12 @@ from podium.intelligence.diagnosis import diagnose
 from podium.intelligence.strategy import generate_actions
 from podium.models.enums import Lane, WorkflowState
 from podium.models.recovery_types import DiagnosisResult, PolicyResult, RecoveryAction
-from podium.policy.gate import select_first_allowed_action
+from podium.policy.gate import load_policy_config, select_first_allowed_action
 from podium.state.context import CaseRunContext
 from podium.state.machine import apply_transition, can_transition
 from podium.state.persistence import log_recovery_action, save_case_state
 
-MAX_STEPS = 20
+MAX_STEPS = 30
 
 
 @dataclass
@@ -44,7 +45,7 @@ def run_subscription_case(
     conn: sqlite3.Connection,
     case_id: str,
     *,
-    now: datetime | None = None,
+    start_time: datetime | None = None,
 ) -> RunCaseResult:
     case = load_case_by_id(conn, case_id)
     if case is None:
@@ -54,22 +55,23 @@ def run_subscription_case(
 
     customer = load_customer_context(conn, case.customer_id)
     ctx = CaseRunContext(case=case)
-    now = now or datetime.now(timezone.utc)
+    clock = SimulatedClock(start_time)
+    policy = load_policy_config()
     selected: RecoveryAction | None = None
     policy_result: PolicyResult | None = None
 
     if customer.opt_out:
-        _apply_and_audit(conn, ctx, "customer_opts_out", "system", "Customer opted out.")
+        _apply_and_audit(conn, ctx, clock, "customer_opts_out", "system", "Customer opted out.")
         save_case_state(conn, ctx)
         conn.commit()
         return _finalize(conn, ctx, diagnose(ctx.sync_case_view()), [], None, None)
 
     diagnosis = diagnose(ctx.sync_case_view())
-    _audit(conn, ctx, "DIAGNOSED", None, "diagnosis_engine", diagnosis.rationale, {"likely_cause": diagnosis.likely_cause})
-    _apply_and_audit(conn, ctx, "case_diagnosed", "diagnosis_engine", "Case diagnosed.")
+    _audit(conn, ctx, clock, "DIAGNOSED", None, "diagnosis_engine", diagnosis.rationale, {"likely_cause": diagnosis.likely_cause})
+    _apply_and_audit(conn, ctx, clock, "case_diagnosed", "diagnosis_engine", "Case diagnosed.")
 
     initial_actions = generate_actions(ctx.sync_case_view(), diagnosis)
-    _audit(conn, ctx, "ACTION_PROPOSED", None, "strategy_engine", "Initial candidate actions.", {"actions": [a.action_id for a in initial_actions]})
+    _audit(conn, ctx, clock, "ACTION_PROPOSED", None, "strategy_engine", "Initial candidate actions.", {"actions": [a.action_id for a in initial_actions]})
 
     for _ in range(MAX_STEPS):
         if is_terminal_state(ctx.workflow_state):
@@ -81,13 +83,14 @@ def run_subscription_case(
             actions = [a for a in actions if a.action_id != "payment_method_update"]
 
         selected, policy_result, checks = select_first_allowed_action(
-            case_view, actions, customer, conn, ctx.last_retry_at, now
+            case_view, actions, customer, conn, ctx.last_retry_at, clock.now
         )
 
         for check in checks:
             _audit(
                 conn,
                 ctx,
+                clock,
                 "POLICY_CHECK",
                 check.action,
                 "policy_gate",
@@ -96,22 +99,53 @@ def run_subscription_case(
             )
 
         if selected is None:
+            cooldown_hours = clock.hours_until_cooldown_clear(
+                ctx.last_retry_at, policy.min_contact_cooldown_hours
+            )
+            if cooldown_hours > 0 and any(a.is_retry for a in actions):
+                clock.advance_hours(cooldown_hours)
+                _audit(
+                    conn,
+                    ctx,
+                    clock,
+                    "SIM_TIME_ADVANCED",
+                    None,
+                    "sim_clock",
+                    f"Advanced {cooldown_hours}h to satisfy retry cooldown.",
+                    {"simulated_now": clock.now.isoformat(), "reason": "cooldown"},
+                )
+                continue
+
             ctx.record_state(WorkflowState.EXHAUSTED.value)
             ctx.terminal = True
-            _audit(conn, ctx, "EXHAUSTED", None, "policy_gate", "No feasible action under policy.")
+            _audit(conn, ctx, clock, "EXHAUSTED", None, "policy_gate", "No feasible action under policy.")
             break
 
-        _prepare_for_execution(conn, ctx, selected)
+        _prepare_for_execution(conn, ctx, clock, selected)
+
+        if selected.is_retry and selected.retry_delay_hours:
+            clock.advance_hours(selected.retry_delay_hours)
+            _audit(
+                conn,
+                ctx,
+                clock,
+                "RETRY_SCHEDULED",
+                selected.action_id,
+                "sim_clock",
+                f"Advanced {selected.retry_delay_hours}h for scheduled retry.",
+                {"simulated_now": clock.now.isoformat(), "delay_hours": selected.retry_delay_hours},
+            )
 
         execution = simulate_execution(ctx, selected, diagnosis)
         ctx.last_action = selected.action_id
         if selected.is_retry:
-            ctx.last_retry_at = now
+            ctx.last_retry_at = clock.now
 
         log_recovery_action(conn, ctx, execution)
         _audit(
             conn,
             ctx,
+            clock,
             "ACTION_EXECUTED",
             selected.action_id,
             "execution_simulator",
@@ -121,51 +155,56 @@ def run_subscription_case(
 
         outcome = process_outcome(ctx, execution)
         if outcome.trigger and can_transition(ctx, outcome.trigger):
-            _apply_and_audit(conn, ctx, outcome.trigger, "outcome_engine", outcome.summary)
-            _audit(conn, ctx, _outcome_event_type(outcome), selected.action_id, "outcome_engine", outcome.summary)
+            _apply_and_audit(conn, ctx, clock, outcome.trigger, "outcome_engine", outcome.summary)
+            _audit(conn, ctx, clock, _outcome_event_type(outcome), selected.action_id, "outcome_engine", outcome.summary)
 
         if outcome.recovered:
             break
 
-        if execution.event == "payment_failed" and not can_transition(ctx, "max_retries_exceeded"):
-            # Return to waiting for another recovery cycle
+        if execution.event == "payment_failed" and outcome.trigger != "max_retries_exceeded":
             if ctx.workflow_state != WorkflowState.WAITING.value:
                 ctx.record_state(WorkflowState.WAITING.value)
-                _audit(conn, ctx, "STATE_TRANSITION", None, "state_machine", f"Waiting for next action (attempt {ctx.attempt_count}).")
+                _audit(conn, ctx, clock, "STATE_TRANSITION", None, "state_machine", f"Waiting for next action (attempt {ctx.attempt_count}).")
 
         if execution.event == "payment_method_updated":
             if ctx.workflow_state == WorkflowState.CONTACTED.value:
                 ctx.record_state(WorkflowState.WAITING.value)
-                _audit(conn, ctx, "STATE_TRANSITION", None, "state_machine", "Awaiting retry after method update request.")
+                _audit(conn, ctx, clock, "STATE_TRANSITION", None, "state_machine", "Awaiting retry after method update request.")
 
     save_case_state(conn, ctx)
     conn.commit()
     return _finalize(conn, ctx, diagnosis, initial_actions, selected, policy_result)
 
 
-def _prepare_for_execution(conn: sqlite3.Connection, ctx: CaseRunContext, action: RecoveryAction) -> None:
+def _prepare_for_execution(
+    conn: sqlite3.Connection,
+    ctx: CaseRunContext,
+    clock: SimulatedClock,
+    action: RecoveryAction,
+) -> None:
     state = ctx.workflow_state
 
     if action.is_retry:
         if state in (WorkflowState.DIAGNOSED.value, WorkflowState.WAITING.value, WorkflowState.CONTACTED.value):
             if can_transition(ctx, "retry_scheduled"):
-                _apply_and_audit(conn, ctx, "retry_scheduled", "state_machine", f"Scheduling {action.action_id}.")
+                _apply_and_audit(conn, ctx, clock, "retry_scheduled", "state_machine", f"Scheduling {action.action_id}.")
             if can_transition(ctx, "waiting_for_retry"):
-                _apply_and_audit(conn, ctx, "waiting_for_retry", "state_machine", "Waiting to execute retry.")
+                _apply_and_audit(conn, ctx, clock, "waiting_for_retry", "state_machine", "Waiting to execute retry.")
         return
 
     if action.is_contact and state in (WorkflowState.DIAGNOSED.value, WorkflowState.WAITING.value):
         if can_transition(ctx, "contact_sent"):
-            _apply_and_audit(conn, ctx, "contact_sent", "state_machine", f"Sending {action.action_id}.")
+            _apply_and_audit(conn, ctx, clock, "contact_sent", "state_machine", f"Sending {action.action_id}.")
         return
 
     if action.action_id == "human_escalation" and can_transition(ctx, "escalated"):
-        _apply_and_audit(conn, ctx, "escalated", "state_machine", "Escalating to human agent.")
+        _apply_and_audit(conn, ctx, clock, "escalated", "state_machine", "Escalating to human agent.")
 
 
 def _apply_and_audit(
     conn: sqlite3.Connection,
     ctx: CaseRunContext,
+    clock: SimulatedClock,
     trigger: str,
     actor: str,
     reason: str,
@@ -183,12 +222,14 @@ def _apply_and_audit(
         actor=actor,
         reason=reason,
         metadata={"trigger": trigger},
+        timestamp=clock.now,
     )
 
 
 def _audit(
     conn: sqlite3.Connection,
     ctx: CaseRunContext,
+    clock: SimulatedClock,
     event_type: str,
     action: str | None,
     actor: str,
@@ -206,6 +247,7 @@ def _audit(
         actor=actor,
         reason=reason,
         metadata=metadata or {},
+        timestamp=clock.now,
     )
 
 
@@ -217,7 +259,7 @@ def _outcome_event_type(outcome) -> str:
     if outcome.trigger == "escalated":
         return "ESCALATED"
     if outcome.trigger == "payment_method_updated":
-        return "RETRY_SCHEDULED"
+        return "PAYMENT_METHOD_UPDATE"
     return "PAYMENT_FAILED"
 
 
@@ -259,7 +301,7 @@ def format_run_summary(result: RunCaseResult) -> str:
         lines.append(f"Selected action: {result.selected_action.action_id}")
     if result.policy_result:
         status = "ALLOWED" if result.policy_result.allowed else "BLOCKED"
-        lines.append(f"Policy: {status} — {result.policy_result.reason}")
+        lines.append(f"Policy: {status} - {result.policy_result.reason}")
     lines.extend(["", "State progression:", "  " + " -> ".join(result.state_history), ""])
     if result.recovered:
         lines.append(f"Outcome: Recovered {result.currency} {result.amount_recovered:,.2f}")

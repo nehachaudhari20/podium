@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import ast
 import sqlite3
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,8 +10,9 @@ import pytest
 from podium.audit.trail import load_audit_trail
 from podium.db import connect
 from podium.ingestion.synthetic.generator import SyntheticDataGenerator, persist_dataset
-from podium.models.enums import Lane, WorkflowState
+from podium.models.enums import WorkflowState
 from podium.pipeline.subscription_runner import run_subscription_case
+from podium.state.reset import reset_case_for_run
 
 
 @pytest.fixture
@@ -39,59 +38,113 @@ def _find_subscription_case(conn: sqlite3.Connection, failure_reason: str) -> st
     return row["case_id"]
 
 
-from podium.state.reset import reset_case_for_run
+def _prepare_test_case(conn: sqlite3.Connection, case_id: str) -> None:
+    """Test fixture: reset case and isolate customer contact state for deterministic runs."""
+    reset_case_for_run(conn, case_id)
+    row = conn.execute(
+        "SELECT customer_id FROM recovery_cases WHERE case_id = ?", (case_id,)
+    ).fetchone()
+    conn.execute(
+        """
+        UPDATE customers SET opt_out = 0, prior_contacts_7d = 0
+        WHERE customer_id = ?
+        """,
+        (row["customer_id"],),
+    )
+    conn.commit()
 
 
 def test_success_path_transient_failure(phase2_db):
-    db_path, conn = phase2_db
+    _, conn = phase2_db
     case_id = _find_subscription_case(conn, "network_timeout")
-    reset_case_for_run(conn, case_id)
+    _prepare_test_case(conn, case_id)
     result = run_subscription_case(conn, case_id)
     assert result.recovered is True
     assert result.terminal_state == WorkflowState.RECOVERED.value
-    assert "detected" in result.state_history
-    assert "diagnosed" in result.state_history
+    assert result.state_history[:4] == ["detected", "diagnosed", "retry_scheduled", "waiting"]
+    assert "contacted" not in result.state_history
     assert result.amount_recovered > 0
 
 
+def test_transient_failure_advances_simulated_time(phase2_db):
+    _, conn = phase2_db
+    case_id = _find_subscription_case(conn, "transient_technical")
+    _prepare_test_case(conn, case_id)
+    run_subscription_case(conn, case_id)
+    events = load_audit_trail(conn, case_id)
+    event_types = {e.event_type for e in events}
+    assert "RETRY_SCHEDULED" in event_types
+
+
 def test_exhaustion_path_repeated_failure(phase2_db):
-    db_path, conn = phase2_db
+    _, conn = phase2_db
     case_id = _find_subscription_case(conn, "repeated_failure")
+    _prepare_test_case(conn, case_id)
     result = run_subscription_case(conn, case_id)
     assert result.recovered is False
     assert result.terminal_state in (WorkflowState.EXHAUSTED.value, WorkflowState.ESCALATED.value)
+    assert "retry_scheduled" in result.state_history
+
+
+def test_insufficient_funds_recovers_after_retries(phase2_db):
+    _, conn = phase2_db
+    case_id = _find_subscription_case(conn, "insufficient_funds")
+    _prepare_test_case(conn, case_id)
+    result = run_subscription_case(conn, case_id)
+    assert result.recovered is True
+    events = load_audit_trail(conn, case_id)
+    assert "SIM_TIME_ADVANCED" in {e.event_type for e in events}
 
 
 def test_expired_card_recovers_after_method_update(phase2_db):
-    db_path, conn = phase2_db
+    _, conn = phase2_db
     case_id = _find_subscription_case(conn, "expired_card")
-    reset_case_for_run(conn, case_id)
+    _prepare_test_case(conn, case_id)
     result = run_subscription_case(conn, case_id)
     assert result.recovered is True
+    assert "contacted" in result.state_history
     assert "payment_method_update" in [a.action_id for a in result.candidate_actions]
 
 
-def test_audit_trail_recorded(phase2_db):
-    db_path, conn = phase2_db
-    case_id = _find_subscription_case(conn, "transient_technical")
+def test_audit_trail_complete(phase2_db):
+    _, conn = phase2_db
+    case_id = _find_subscription_case(conn, "issuer_timeout")
+    _prepare_test_case(conn, case_id)
     result = run_subscription_case(conn, case_id)
     events = load_audit_trail(conn, case_id)
     event_types = {e.event_type for e in events}
-    assert "DIAGNOSED" in event_types
-    assert "POLICY_CHECK" in event_types
-    assert "ACTION_EXECUTED" in event_types
-    assert "STATE_TRANSITION" in event_types
-    assert result.audit_event_count >= 4
+    assert {"DIAGNOSED", "ACTION_PROPOSED", "POLICY_CHECK", "ACTION_EXECUTED", "STATE_TRANSITION"} <= event_types
+    assert result.audit_event_count >= 5
+
+
+def test_reset_does_not_mutate_customer(phase2_db):
+    _, conn = phase2_db
+    case_id = _find_subscription_case(conn, "network_timeout")
+    row = conn.execute(
+        "SELECT customer_id FROM recovery_cases WHERE case_id = ?", (case_id,)
+    ).fetchone()
+    conn.execute(
+        "UPDATE customers SET opt_out = 1, prior_contacts_7d = 2 WHERE customer_id = ?",
+        (row["customer_id"],),
+    )
+    conn.commit()
+    reset_case_for_run(conn, case_id)
+    customer = conn.execute(
+        "SELECT opt_out, prior_contacts_7d FROM customers WHERE customer_id = ?",
+        (row["customer_id"],),
+    ).fetchone()
+    assert customer["opt_out"] == 1
+    assert customer["prior_contacts_7d"] == 2
 
 
 def test_runtime_modules_do_not_reference_ground_truth():
-    """Hard check: Phase 2 runtime modules must not query evaluator ground truth."""
     runtime_modules = [
         Path("src/podium/intelligence/diagnosis.py"),
         Path("src/podium/intelligence/strategy.py"),
         Path("src/podium/policy/gate.py"),
         Path("src/podium/state/machine.py"),
         Path("src/podium/execution/simulator.py"),
+        Path("src/podium/execution/sim_clock.py"),
         Path("src/podium/execution/outcomes.py"),
         Path("src/podium/pipeline/subscription_runner.py"),
         Path("src/podium/ingestion/runtime_loader.py"),
@@ -105,8 +158,9 @@ def test_runtime_modules_do_not_reference_ground_truth():
 
 
 def test_case_persisted_after_run(phase2_db):
-    db_path, conn = phase2_db
+    _, conn = phase2_db
     case_id = _find_subscription_case(conn, "issuer_timeout")
+    _prepare_test_case(conn, case_id)
     run_subscription_case(conn, case_id)
     row = conn.execute(
         "SELECT workflow_state, status FROM recovery_cases WHERE case_id = ?",
@@ -116,5 +170,4 @@ def test_case_persisted_after_run(phase2_db):
         WorkflowState.RECOVERED.value,
         WorkflowState.EXHAUSTED.value,
         WorkflowState.ESCALATED.value,
-        WorkflowState.WAITING.value,
     )
