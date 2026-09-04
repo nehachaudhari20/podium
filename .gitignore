@@ -29,12 +29,22 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Data (generated artifacts — keep structure, ignore outputs)
-data/generated/*
-!data/generated/.gitkeep
-data/podium.db
+# Backend data (generated artifacts — keep structure, ignore outputs)
+backend/data/generated/*
+!backend/data/generated/.gitkeep
+backend/data/podium.db
 *.db
+
+# Debug logs
+debug-*.log
+
+# Frontend (future)
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
 
 # OS
 .DS_Store
 Thumbs.db
+
+*.cursor

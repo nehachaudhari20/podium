@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podium-backend"
+version = "0.1.0"
+description = "Adaptive Revenue Recovery Intelligence for Razorpay AI Buildathon 2026"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+gemini = [
+    "google-genai>=1.0.0",
+]
+
+[project.scripts]
+podium-generate = "recovery.cli:generate_data"
+podium-run-case = "recovery.cli:run_case"
+podium-run-batch = "recovery.cli:run_batch"
+podium-evaluate = "recovery.cli:run_evaluation"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
