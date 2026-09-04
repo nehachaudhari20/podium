@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import sqlite3
 
@@ -41,7 +41,9 @@ def check_policy(
 ) -> PolicyResult:
     """Evaluate whether a proposed action is allowed under merchant policy."""
     policy = load_policy_config()
-    now = now or datetime.now()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     if policy.opt_out_protection and customer.opt_out and action.is_contact:
         return PolicyResult(
@@ -71,7 +73,8 @@ def check_policy(
             )
 
     if action.is_retry and last_retry_at is not None:
-        elapsed = now - last_retry_at
+        last = last_retry_at if last_retry_at.tzinfo else last_retry_at.replace(tzinfo=timezone.utc)
+        elapsed = now - last
         cooldown = timedelta(hours=policy.min_contact_cooldown_hours)
         if elapsed < cooldown:
             return PolicyResult(
