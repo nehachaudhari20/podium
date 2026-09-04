@@ -7,7 +7,7 @@ evaluator-only fields such as p_pay_anyway.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
