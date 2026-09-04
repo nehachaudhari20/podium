@@ -82,5 +82,71 @@ def run_batch() -> None:
 
 
 def run_evaluation() -> None:
-    """Run baseline / adaptive / full evaluation — Phase 8."""
-    raise NotImplementedError("Batch evaluator not yet implemented")
+    """Run Phase 3 intelligence evaluation on subscription cases."""
+    import json
+
+    from recovery.db import connect, init_schema
+    from recovery.env_loader import load_project_env
+    from recovery.evaluation.phase3_runner import (
+        compare_modes,
+        default_export_path,
+        export_evaluation_json,
+        run_phase3_evaluation,
+    )
+    from recovery.evaluation.phase3_metrics import format_evaluation_report
+    from recovery.paths import DEFAULT_DB_PATH
+
+    load_project_env()
+    parser = argparse.ArgumentParser(description="Run Phase 3 intelligence evaluation")
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="SQLite database path")
+    parser.add_argument(
+        "--intelligence",
+        choices=("deterministic", "hybrid", "gemini"),
+        default="deterministic",
+        help="Intelligence mode to evaluate",
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Compare deterministic vs hybrid modes",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of subscription cases (default: all)",
+    )
+    parser.add_argument(
+        "--export-json",
+        action="store_true",
+        help="Write JSON report to data/generated/",
+    )
+    args = parser.parse_args()
+
+    conn = connect(args.db)
+    init_schema(conn)
+    try:
+        if args.compare:
+            summaries = compare_modes(conn, limit=args.limit)
+            for mode, summary in summaries.items():
+                print(format_evaluation_report(summary))
+                print()
+                if args.export_json:
+                    export_evaluation_json(summary, default_export_path(mode))
+            if args.export_json:
+                combined = {mode: s.to_dict() for mode, s in summaries.items()}
+                path = DEFAULT_DB_PATH.parent / "generated" / "phase3_evaluation_compare.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
+                print(f"Comparison exported: {path}")
+        else:
+            summary = run_phase3_evaluation(
+                conn, intelligence_mode=args.intelligence, limit=args.limit
+            )
+            print(format_evaluation_report(summary))
+            if args.export_json:
+                path = default_export_path(args.intelligence)
+                export_evaluation_json(summary, path)
+                print(f"Exported: {path}")
+    finally:
+        conn.close()

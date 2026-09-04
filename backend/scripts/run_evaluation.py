@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run baseline / adaptive / full evaluation (Phase 8)."""
+"""Run Phase 3 intelligence evaluation."""
 
 from recovery.cli import run_evaluation
 
