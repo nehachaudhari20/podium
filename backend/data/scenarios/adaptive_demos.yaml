@@ -1,0 +1,63 @@
+# Adaptive demonstration scenarios — Phase 3F
+# Shows how the agent adapts recovery strategy per failure type.
+
+scenarios:
+  - id: transient_fast_retry
+    title: "Transient failure — immediate retry recovery"
+    failure_reason: network_timeout
+    narrative: >
+      Network timeout is treated as transient. The agent observes once,
+      proposes a short retry, and recovers without customer contact.
+    expected:
+      recovered: true
+      min_agent_steps: 1
+      max_agent_steps: 2
+      min_replan_count: 0
+      required_states: [retry_scheduled, recovered]
+      forbidden_states: [contacted]
+
+  - id: insufficient_funds_adaptive
+    title: "Insufficient funds — multi-step adaptive path"
+    failure_reason: insufficient_funds
+    narrative: >
+      Insufficient funds triggers retries, then customer contact when retries
+      fail, then another retry after balance may have been topped up.
+    expected:
+      recovered: true
+      min_agent_steps: 2
+      min_replan_count: 1
+      required_states: [retry_scheduled, contacted, recovered]
+
+  - id: expired_card_contact_first
+    title: "Expired card — contact before retry"
+    failure_reason: expired_card
+    narrative: >
+      Expired payment method requires customer contact to update card,
+      then a retry after the method is refreshed.
+    expected:
+      recovered: true
+      min_agent_steps: 2
+      required_states: [contacted, recovered]
+
+  - id: hero_expired_subscription
+    title: "Hero scenario — NovaTech expired subscription"
+    case_id: case_hero_sub_001
+    narrative: >
+      Hand-crafted hero case for demos: B2B subscription with expired card,
+      recovered through adaptive contact + retry sequence.
+    expected:
+      recovered: true
+      min_agent_steps: 2
+      required_states: [contacted, recovered]
+
+  - id: repeated_failure_terminal
+    title: "Repeated failure — escalation or exhaustion"
+    failure_reason: repeated_failure
+    narrative: >
+      Persistent failures exhaust automated retries. The agent re-plans
+      across cycles but reaches a terminal non-recovery state.
+    expected:
+      recovered: false
+      min_agent_steps: 1
+      terminal_states: [exhausted, escalated]
+      required_states: [retry_scheduled]
