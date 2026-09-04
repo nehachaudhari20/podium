@@ -1,0 +1,269 @@
+"""Subscription-payment recovery pipeline — Phase 2 vertical slice."""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from podium.audit.trail import record_event
+from podium.execution.outcomes import is_terminal_state, process_outcome
+from podium.execution.simulator import simulate_execution
+from podium.ingestion.customer_loader import load_customer_context
+from podium.ingestion.runtime_loader import load_case_by_id
+from podium.intelligence.diagnosis import diagnose
+from podium.intelligence.strategy import generate_actions
+from podium.models.enums import Lane, WorkflowState
+from podium.models.recovery_types import DiagnosisResult, PolicyResult, RecoveryAction
+from podium.policy.gate import select_first_allowed_action
+from podium.state.context import CaseRunContext
+from podium.state.machine import apply_transition, can_transition
+from podium.state.persistence import log_recovery_action, save_case_state
+
+MAX_STEPS = 20
+
+
+@dataclass
+class RunCaseResult:
+    case_id: str
+    lane: str
+    amount: float
+    currency: str
+    diagnosis: DiagnosisResult
+    candidate_actions: list[RecoveryAction]
+    selected_action: RecoveryAction | None = None
+    policy_result: PolicyResult | None = None
+    state_history: list[str] = field(default_factory=list)
+    recovered: bool = False
+    amount_recovered: float = 0.0
+    terminal_state: str = ""
+    audit_event_count: int = 0
+
+
+def run_subscription_case(
+    conn: sqlite3.Connection,
+    case_id: str,
+    *,
+    now: datetime | None = None,
+) -> RunCaseResult:
+    case = load_case_by_id(conn, case_id)
+    if case is None:
+        raise ValueError(f"Case not found: {case_id}")
+    if case.lane != Lane.SUBSCRIPTION_PAYMENT.value:
+        raise ValueError(f"Phase 2 run_case supports subscription_payment only, got {case.lane}")
+
+    customer = load_customer_context(conn, case.customer_id)
+    ctx = CaseRunContext(case=case)
+    now = now or datetime.now(timezone.utc)
+    selected: RecoveryAction | None = None
+    policy_result: PolicyResult | None = None
+
+    if customer.opt_out:
+        _apply_and_audit(conn, ctx, "customer_opts_out", "system", "Customer opted out.")
+        save_case_state(conn, ctx)
+        conn.commit()
+        return _finalize(conn, ctx, diagnose(ctx.sync_case_view()), [], None, None)
+
+    diagnosis = diagnose(ctx.sync_case_view())
+    _audit(conn, ctx, "DIAGNOSED", None, "diagnosis_engine", diagnosis.rationale, {"likely_cause": diagnosis.likely_cause})
+    _apply_and_audit(conn, ctx, "case_diagnosed", "diagnosis_engine", "Case diagnosed.")
+
+    initial_actions = generate_actions(ctx.sync_case_view(), diagnosis)
+    _audit(conn, ctx, "ACTION_PROPOSED", None, "strategy_engine", "Initial candidate actions.", {"actions": [a.action_id for a in initial_actions]})
+
+    for _ in range(MAX_STEPS):
+        if is_terminal_state(ctx.workflow_state):
+            break
+
+        case_view = ctx.sync_case_view()
+        actions = generate_actions(case_view, diagnosis)
+        if ctx.payment_method_updated:
+            actions = [a for a in actions if a.action_id != "payment_method_update"]
+
+        selected, policy_result, checks = select_first_allowed_action(
+            case_view, actions, customer, conn, ctx.last_retry_at, now
+        )
+
+        for check in checks:
+            _audit(
+                conn,
+                ctx,
+                "POLICY_CHECK",
+                check.action,
+                "policy_gate",
+                check.reason,
+                {"allowed": check.allowed},
+            )
+
+        if selected is None:
+            ctx.record_state(WorkflowState.EXHAUSTED.value)
+            ctx.terminal = True
+            _audit(conn, ctx, "EXHAUSTED", None, "policy_gate", "No feasible action under policy.")
+            break
+
+        _prepare_for_execution(conn, ctx, selected)
+
+        execution = simulate_execution(ctx, selected, diagnosis)
+        ctx.last_action = selected.action_id
+        if selected.is_retry:
+            ctx.last_retry_at = now
+
+        log_recovery_action(conn, ctx, execution)
+        _audit(
+            conn,
+            ctx,
+            "ACTION_EXECUTED",
+            selected.action_id,
+            "execution_simulator",
+            execution.detail,
+            {"event": execution.event, "success": execution.success},
+        )
+
+        outcome = process_outcome(ctx, execution)
+        if outcome.trigger and can_transition(ctx, outcome.trigger):
+            _apply_and_audit(conn, ctx, outcome.trigger, "outcome_engine", outcome.summary)
+            _audit(conn, ctx, _outcome_event_type(outcome), selected.action_id, "outcome_engine", outcome.summary)
+
+        if outcome.recovered:
+            break
+
+        if execution.event == "payment_failed" and not can_transition(ctx, "max_retries_exceeded"):
+            # Return to waiting for another recovery cycle
+            if ctx.workflow_state != WorkflowState.WAITING.value:
+                ctx.record_state(WorkflowState.WAITING.value)
+                _audit(conn, ctx, "STATE_TRANSITION", None, "state_machine", f"Waiting for next action (attempt {ctx.attempt_count}).")
+
+        if execution.event == "payment_method_updated":
+            if ctx.workflow_state == WorkflowState.CONTACTED.value:
+                ctx.record_state(WorkflowState.WAITING.value)
+                _audit(conn, ctx, "STATE_TRANSITION", None, "state_machine", "Awaiting retry after method update request.")
+
+    save_case_state(conn, ctx)
+    conn.commit()
+    return _finalize(conn, ctx, diagnosis, initial_actions, selected, policy_result)
+
+
+def _prepare_for_execution(conn: sqlite3.Connection, ctx: CaseRunContext, action: RecoveryAction) -> None:
+    state = ctx.workflow_state
+
+    if action.is_retry:
+        if state in (WorkflowState.DIAGNOSED.value, WorkflowState.WAITING.value, WorkflowState.CONTACTED.value):
+            if can_transition(ctx, "retry_scheduled"):
+                _apply_and_audit(conn, ctx, "retry_scheduled", "state_machine", f"Scheduling {action.action_id}.")
+            if can_transition(ctx, "waiting_for_retry"):
+                _apply_and_audit(conn, ctx, "waiting_for_retry", "state_machine", "Waiting to execute retry.")
+        return
+
+    if action.is_contact and state in (WorkflowState.DIAGNOSED.value, WorkflowState.WAITING.value):
+        if can_transition(ctx, "contact_sent"):
+            _apply_and_audit(conn, ctx, "contact_sent", "state_machine", f"Sending {action.action_id}.")
+        return
+
+    if action.action_id == "human_escalation" and can_transition(ctx, "escalated"):
+        _apply_and_audit(conn, ctx, "escalated", "state_machine", "Escalating to human agent.")
+
+
+def _apply_and_audit(
+    conn: sqlite3.Connection,
+    ctx: CaseRunContext,
+    trigger: str,
+    actor: str,
+    reason: str,
+) -> None:
+    from_state = ctx.workflow_state
+    apply_transition(ctx, trigger)
+    record_event(
+        conn,
+        case_id=ctx.case.case_id,
+        customer_id=ctx.case.customer_id,
+        event_type="STATE_TRANSITION",
+        from_state=from_state,
+        to_state=ctx.workflow_state,
+        action=ctx.last_action,
+        actor=actor,
+        reason=reason,
+        metadata={"trigger": trigger},
+    )
+
+
+def _audit(
+    conn: sqlite3.Connection,
+    ctx: CaseRunContext,
+    event_type: str,
+    action: str | None,
+    actor: str,
+    reason: str,
+    metadata: dict | None = None,
+) -> None:
+    record_event(
+        conn,
+        case_id=ctx.case.case_id,
+        customer_id=ctx.case.customer_id,
+        event_type=event_type,
+        from_state=ctx.workflow_state,
+        to_state=ctx.workflow_state,
+        action=action,
+        actor=actor,
+        reason=reason,
+        metadata=metadata or {},
+    )
+
+
+def _outcome_event_type(outcome) -> str:
+    if outcome.recovered:
+        return "RECOVERED"
+    if outcome.trigger == "max_retries_exceeded":
+        return "EXHAUSTED"
+    if outcome.trigger == "escalated":
+        return "ESCALATED"
+    if outcome.trigger == "payment_method_updated":
+        return "RETRY_SCHEDULED"
+    return "PAYMENT_FAILED"
+
+
+def _finalize(conn, ctx, diagnosis, candidates, selected, policy) -> RunCaseResult:
+    audit_count = conn.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE case_id = ?", (ctx.case.case_id,)
+    ).fetchone()[0]
+    return RunCaseResult(
+        case_id=ctx.case.case_id,
+        lane=ctx.case.lane,
+        amount=ctx.case.amount,
+        currency=ctx.case.currency,
+        diagnosis=diagnosis,
+        candidate_actions=candidates,
+        selected_action=selected,
+        policy_result=policy,
+        state_history=ctx.state_history,
+        recovered=ctx.workflow_state == WorkflowState.RECOVERED.value,
+        amount_recovered=ctx.amount_recovered,
+        terminal_state=ctx.workflow_state,
+        audit_event_count=int(audit_count),
+    )
+
+
+def format_run_summary(result: RunCaseResult) -> str:
+    lines = [
+        f"Case: {result.case_id}",
+        f"Lane: {result.lane}",
+        f"Amount: {result.currency} {result.amount:,.2f}",
+        "",
+        "Diagnosis:",
+        f"  {result.diagnosis.likely_cause} (confidence {result.diagnosis.confidence:.0%})",
+        "",
+        "Candidate actions:",
+    ]
+    lines.extend(f"  {a.action_id}" for a in result.candidate_actions)
+    lines.append("")
+    if result.selected_action:
+        lines.append(f"Selected action: {result.selected_action.action_id}")
+    if result.policy_result:
+        status = "ALLOWED" if result.policy_result.allowed else "BLOCKED"
+        lines.append(f"Policy: {status} — {result.policy_result.reason}")
+    lines.extend(["", "State progression:", "  " + " -> ".join(result.state_history), ""])
+    if result.recovered:
+        lines.append(f"Outcome: Recovered {result.currency} {result.amount_recovered:,.2f}")
+    else:
+        lines.append(f"Outcome: Terminal state '{result.terminal_state}'")
+    lines.append(f"Audit events: {result.audit_event_count}")
+    return "\n".join(lines)

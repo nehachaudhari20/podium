@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from podium.db import connect, init_schema
 from podium.ingestion.synthetic.generator import generate_and_persist
+from podium.paths import DEFAULT_DB_PATH
+from podium.pipeline.subscription_runner import format_run_summary, run_subscription_case
+from podium.state.reset import reset_case_for_run
 
 
 def generate_data() -> None:
@@ -23,8 +27,47 @@ def generate_data() -> None:
 
 
 def run_case() -> None:
-    """Run a single recovery case — Phase 2."""
-    raise NotImplementedError("Phase 2: single-case runner not yet implemented")
+    """Run a single subscription-payment recovery case — Phase 2."""
+    parser = argparse.ArgumentParser(description="Run one subscription recovery case")
+    parser.add_argument("--case-id", type=str, default=None, help="Recovery case ID")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_DB_PATH,
+        help="SQLite database path",
+    )
+    parser.add_argument(
+        "--reset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reset case to detected before running (default: true)",
+    )
+    args = parser.parse_args()
+
+    conn = connect(args.db)
+    init_schema(conn)
+
+    case_id = args.case_id
+    if case_id is None:
+        row = conn.execute(
+            """
+            SELECT case_id FROM recovery_cases
+            WHERE lane = 'subscription_payment'
+            ORDER BY case_id
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            conn.close()
+            raise SystemExit("No subscription_payment cases found. Run generate_data first.")
+        case_id = row["case_id"]
+
+    if args.reset:
+        reset_case_for_run(conn, case_id)
+
+    result = run_subscription_case(conn, case_id)
+    conn.close()
+    print(format_run_summary(result))
 
 
 def run_batch() -> None:
