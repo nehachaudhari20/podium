@@ -137,9 +137,10 @@ def run_evaluation() -> None:
             Lane.RECEIVABLE.value,
             "economics",
             "coordination",
+            "learning",
         ),
         default=Lane.SUBSCRIPTION_PAYMENT.value,
-        help="Evaluation lane (use economics / coordination / receivable for Phase 5/6/7)",
+        help="Evaluation lane (economics / coordination / receivable / learning for Phases 5–8)",
     )
     parser.add_argument(
         "--intelligence",
@@ -181,6 +182,27 @@ def run_evaluation() -> None:
             if args.export_json:
                 export_phase6_evaluation_json(summary, default_phase6_export_path())
                 print(f"Exported: {default_phase6_export_path()}")
+        elif args.lane == "learning":
+            from recovery.demos.learning import format_hero_learning_demo, format_learning_demo_report, run_learning_demos
+            from recovery.evaluation.phase8_runner import (
+                default_phase8_export_path,
+                export_phase8_evaluation_json,
+                format_phase8_evaluation_report,
+                run_phase8_evaluation,
+            )
+
+            demo = run_learning_demos(conn)
+            print(format_learning_demo_report(demo))
+            print()
+            print(format_hero_learning_demo(conn))
+            print()
+            summary = run_phase8_evaluation(
+                conn, intelligence_mode=args.intelligence, limit=args.limit or 10
+            )
+            print(format_phase8_evaluation_report(summary))
+            if args.export_json:
+                export_phase8_evaluation_json(summary, default_phase8_export_path())
+                print(f"Exported: {default_phase8_export_path()}")
         elif args.lane == Lane.RECEIVABLE.value:
             from recovery.evaluation.phase7_runner import (
                 default_phase7_export_path,
@@ -247,7 +269,7 @@ def run_evaluation() -> None:
             export_path_fn = default_export_path
             compare_name = "phase3_evaluation_compare.json"
 
-        if args.lane not in {"economics", "coordination", Lane.RECEIVABLE.value}:
+        if args.lane not in {"economics", "coordination", "learning", Lane.RECEIVABLE.value}:
             if args.compare:
                 summaries = compare_fn(conn, limit=args.limit)
                 for mode, summary in summaries.items():
