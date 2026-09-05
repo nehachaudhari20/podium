@@ -39,6 +39,12 @@ class RunCaseResult:
     audit_event_count: int = 0
     agent_steps: int = 0
     replan_count: int = 0
+    economic_candidates: list = field(default_factory=list)
+    expected_recovery_value: float | None = None
+    expected_net_value: float | None = None
+    intervention_cost: float | None = None
+    capacity_decision: str | None = None
+    economic_reason: str | None = None
 
 
 def run_subscription_case(
@@ -73,7 +79,7 @@ def run_subscription_case(
         _apply_opt_out(conn, ctx, clock)
         save_case_state(conn, ctx)
         conn.commit()
-        return _finalize(conn, ctx, _empty_diagnosis(), [], None, None, "deterministic", 0, 0)
+        return _finalize(conn, ctx, _empty_diagnosis(), [], None, None, "deterministic", 0, 0, None, None)
 
     _apply_and_audit(conn, ctx, clock, "case_diagnosed", "diagnosis_engine", "Case diagnosed.")
 
@@ -91,6 +97,8 @@ def run_subscription_case(
         loop_result.decision_source,
         len(loop_result.steps),
         loop_result.replan_count,
+        loop_result.economic_decision,
+        loop_result.capacity_decision,
     )
 
 
@@ -151,10 +159,24 @@ def _finalize(
     decision_source,
     agent_steps,
     replan_count,
+    economic_decision=None,
+    capacity_decision=None,
 ) -> RunCaseResult:
     audit_count = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE case_id = ?", (ctx.case.case_id,)
     ).fetchone()[0]
+    eco_candidates = []
+    expected_recovery = None
+    expected_net = None
+    intervention_cost = None
+    economic_reason = None
+    if economic_decision is not None:
+        eco_candidates = list(economic_decision.candidates)
+        economic_reason = economic_decision.economic_reason
+        if economic_decision.selected is not None:
+            expected_recovery = economic_decision.selected.expected_recovery_value
+            expected_net = economic_decision.selected.expected_net_value
+            intervention_cost = economic_decision.selected.intervention_cost
     return RunCaseResult(
         case_id=ctx.case.case_id,
         lane=ctx.case.lane,
@@ -172,6 +194,12 @@ def _finalize(
         audit_event_count=int(audit_count),
         agent_steps=agent_steps,
         replan_count=replan_count,
+        economic_candidates=eco_candidates,
+        expected_recovery_value=expected_recovery,
+        expected_net_value=expected_net,
+        intervention_cost=intervention_cost,
+        capacity_decision=capacity_decision,
+        economic_reason=economic_reason,
     )
 
 
@@ -179,7 +207,7 @@ def format_run_summary(result: RunCaseResult) -> str:
     lines = [
         f"Case: {result.case_id}",
         f"Lane: {result.lane}",
-        f"Amount: {result.currency} {result.amount:,.2f}",
+        f"Amount at risk: {result.currency} {result.amount:,.2f}",
         "",
         "Diagnosis:",
         f"  {result.diagnosis.likely_cause} (confidence {result.diagnosis.confidence:.0%})",
@@ -188,9 +216,30 @@ def format_run_summary(result: RunCaseResult) -> str:
         "Candidate actions:",
     ]
     lines.extend(f"  {a.action_id}" for a in result.candidate_actions)
+
+    if result.economic_candidates:
+        lines.extend(["", "Economics:"])
+        for candidate in result.economic_candidates:
+            lines.append(
+                f"  {candidate.action_id}: p={candidate.estimated_recovery_probability:.2f} "
+                f"ERV={candidate.expected_recovery_value:,.2f} "
+                f"cost={candidate.intervention_cost:,.2f} "
+                f"ENV={candidate.expected_net_value:,.2f} "
+                f"({'ok' if candidate.eligible else 'ineligible'}: {candidate.reason})"
+            )
+
     lines.append("")
     if result.selected_action:
         lines.append(f"Selected action: {result.selected_action.action_id}")
+    if result.economic_reason:
+        lines.append(f"Economic reason: {result.economic_reason}")
+    if result.expected_net_value is not None:
+        lines.append(
+            f"Expected net value: {result.currency} {result.expected_net_value:,.2f} "
+            f"(ERV={result.expected_recovery_value:,.2f}, cost={result.intervention_cost:,.2f})"
+        )
+    if result.capacity_decision:
+        lines.append(f"Capacity: {result.capacity_decision}")
     if result.policy_result:
         status = "ALLOWED" if result.policy_result.allowed else "BLOCKED"
         lines.append(f"Policy: {status} - {result.policy_result.reason}")

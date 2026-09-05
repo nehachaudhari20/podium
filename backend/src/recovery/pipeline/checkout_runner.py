@@ -57,7 +57,7 @@ def run_checkout_case(
         _apply_opt_out(conn, ctx, clock)
         save_case_state(conn, ctx)
         conn.commit()
-        return _finalize(conn, ctx, _empty_diagnosis(), [], None, None, "deterministic", 0, 0)
+        return _finalize(conn, ctx, _empty_diagnosis(), [], None, None, "deterministic", 0, 0, None, None)
 
     _apply_and_audit(conn, ctx, clock, "case_diagnosed", "diagnosis_engine", "Case diagnosed.")
 
@@ -75,6 +75,8 @@ def run_checkout_case(
         loop_result.decision_source,
         len(loop_result.steps),
         loop_result.replan_count,
+        loop_result.economic_decision,
+        loop_result.capacity_decision,
     )
 
 
@@ -135,10 +137,24 @@ def _finalize(
     decision_source,
     agent_steps,
     replan_count,
+    economic_decision=None,
+    capacity_decision=None,
 ) -> RunCaseResult:
     audit_count = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE case_id = ?", (ctx.case.case_id,)
     ).fetchone()[0]
+    eco_candidates = []
+    expected_recovery = None
+    expected_net = None
+    intervention_cost = None
+    economic_reason = None
+    if economic_decision is not None:
+        eco_candidates = list(economic_decision.candidates)
+        economic_reason = economic_decision.economic_reason
+        if economic_decision.selected is not None:
+            expected_recovery = economic_decision.selected.expected_recovery_value
+            expected_net = economic_decision.selected.expected_net_value
+            intervention_cost = economic_decision.selected.intervention_cost
     return RunCaseResult(
         case_id=ctx.case.case_id,
         lane=ctx.case.lane,
@@ -156,4 +172,10 @@ def _finalize(
         audit_event_count=int(audit_count),
         agent_steps=agent_steps,
         replan_count=replan_count,
+        economic_candidates=eco_candidates,
+        expected_recovery_value=expected_recovery,
+        expected_net_value=expected_net,
+        intervention_cost=intervention_cost,
+        capacity_decision=capacity_decision,
+        economic_reason=economic_reason,
     )

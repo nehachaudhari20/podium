@@ -124,9 +124,13 @@ def run_evaluation() -> None:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="SQLite database path")
     parser.add_argument(
         "--lane",
-        choices=(Lane.SUBSCRIPTION_PAYMENT.value, Lane.CHECKOUT_ABANDONMENT.value),
+        choices=(
+            Lane.SUBSCRIPTION_PAYMENT.value,
+            Lane.CHECKOUT_ABANDONMENT.value,
+            "economics",
+        ),
         default=Lane.SUBSCRIPTION_PAYMENT.value,
-        help="Evaluation lane (default: subscription_payment)",
+        help="Evaluation lane (default: subscription_payment; use economics for Phase 5 demos)",
     )
     parser.add_argument(
         "--intelligence",
@@ -155,7 +159,29 @@ def run_evaluation() -> None:
     conn = connect(args.db)
     init_schema(conn)
     try:
-        if args.lane == Lane.CHECKOUT_ABANDONMENT.value:
+        if args.lane == "economics":
+            from recovery.evaluation.phase5_runner import (
+                default_phase5_export_path,
+                export_phase5_evaluation_json,
+                run_phase5_demo_evaluation,
+                run_phase5_pipeline_evaluation,
+            )
+            from recovery.evaluation.phase5_metrics import format_economic_evaluation_report
+
+            demo_summary = run_phase5_demo_evaluation()
+            print(demo_summary.extra.get("report", ""))
+            print(format_economic_evaluation_report(demo_summary))
+            if args.export_json:
+                export_phase5_evaluation_json(demo_summary, default_phase5_export_path("demos"))
+                print(f"Exported: {default_phase5_export_path('demos')}")
+            pipe = run_phase5_pipeline_evaluation(
+                conn, intelligence_mode=args.intelligence, limit=args.limit or 30
+            )
+            print(format_economic_evaluation_report(pipe))
+            if args.export_json:
+                export_phase5_evaluation_json(pipe, default_phase5_export_path("pipeline"))
+                print(f"Exported: {default_phase5_export_path('pipeline')}")
+        elif args.lane == Lane.CHECKOUT_ABANDONMENT.value:
             from recovery.evaluation.phase4_runner import (
                 compare_checkout_modes,
                 default_checkout_export_path,
@@ -184,25 +210,26 @@ def run_evaluation() -> None:
             export_path_fn = default_export_path
             compare_name = "phase3_evaluation_compare.json"
 
-        if args.compare:
-            summaries = compare_fn(conn, limit=args.limit)
-            for mode, summary in summaries.items():
-                print(format_evaluation_report(summary))
-                print()
+        if args.lane != "economics":
+            if args.compare:
+                summaries = compare_fn(conn, limit=args.limit)
+                for mode, summary in summaries.items():
+                    print(format_evaluation_report(summary))
+                    print()
+                    if args.export_json:
+                        export_fn(summary, export_path_fn(mode))
                 if args.export_json:
-                    export_fn(summary, export_path_fn(mode))
-            if args.export_json:
-                combined = {mode: s.to_dict() for mode, s in summaries.items()}
-                path = DEFAULT_DB_PATH.parent / "generated" / compare_name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
-                print(f"Comparison exported: {path}")
-        else:
-            summary = run_fn(conn, intelligence_mode=args.intelligence, limit=args.limit)
-            print(format_evaluation_report(summary))
-            if args.export_json:
-                path = export_path_fn(args.intelligence)
-                export_fn(summary, path)
-                print(f"Exported: {path}")
+                    combined = {mode: s.to_dict() for mode, s in summaries.items()}
+                    path = DEFAULT_DB_PATH.parent / "generated" / compare_name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
+                    print(f"Comparison exported: {path}")
+            else:
+                summary = run_fn(conn, intelligence_mode=args.intelligence, limit=args.limit)
+                print(format_evaluation_report(summary))
+                if args.export_json:
+                    path = export_path_fn(args.intelligence)
+                    export_fn(summary, path)
+                    print(f"Exported: {path}")
     finally:
         conn.close()

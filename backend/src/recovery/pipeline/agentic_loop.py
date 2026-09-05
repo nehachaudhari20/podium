@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from recovery.audit.trail import record_event
+from recovery.economics.allocator import CapacityPool
+from recovery.economics.config import EconomicsConfig, load_economics_config
 from recovery.execution.outcomes import is_terminal_state, process_outcome
 from recovery.execution.sim_clock import SimulatedClock
 from recovery.execution.simulator import simulate_execution
@@ -50,6 +52,8 @@ class AgenticLoopResult:
     policy_result: PolicyResult | None = None
     replan_count: int = 0
     recovered: bool = False
+    economic_decision: object | None = None
+    capacity_decision: str | None = None
 
 
 class AgenticRecoveryLoop:
@@ -61,10 +65,14 @@ class AgenticRecoveryLoop:
         policy: PolicyConfig,
         *,
         max_steps: int = MAX_AGENT_STEPS,
+        economics_config: EconomicsConfig | None = None,
+        capacity_pool: CapacityPool | None = None,
     ) -> None:
         self._decision_engine = decision_engine
         self._policy = policy
         self._max_steps = max_steps
+        self._economics_config = economics_config if economics_config is not None else load_economics_config()
+        self._capacity_pool = capacity_pool
 
     def run(
         self,
@@ -160,7 +168,86 @@ class AgenticRecoveryLoop:
                 conn,
                 ctx.last_retry_at,
                 clock.now,
+                economics_config=self._economics_config,
+                capacity_pool=self._capacity_pool,
+                last_action=ctx.last_action,
             )
+            result.economic_decision = evaluated.economic_decision
+            result.capacity_decision = evaluated.capacity_decision
+
+            if evaluated.economic_decision is not None:
+                self._audit(
+                    conn,
+                    ctx,
+                    clock,
+                    "ECONOMIC_EVALUATION",
+                    None,
+                    "economic_engine",
+                    evaluated.economic_decision.economic_reason,
+                    {
+                        "step": step + 1,
+                        "candidates": [
+                            {
+                                "action": c.action_id,
+                                "probability": c.estimated_recovery_probability,
+                                "cost": c.intervention_cost,
+                                "expected_net_value": c.expected_net_value,
+                                "eligible": c.eligible,
+                                "reason": c.reason,
+                            }
+                            for c in evaluated.economic_decision.candidates
+                        ],
+                    },
+                )
+                if evaluated.economic_decision.selected is not None:
+                    sel = evaluated.economic_decision.selected
+                    self._audit(
+                        conn,
+                        ctx,
+                        clock,
+                        "ECONOMIC_ACTION_SELECTED",
+                        sel.action_id,
+                        "economic_engine",
+                        evaluated.economic_decision.economic_reason,
+                        {
+                            "expected_recovery_value": sel.expected_recovery_value,
+                            "intervention_cost": sel.intervention_cost,
+                            "expected_net_value": sel.expected_net_value,
+                        },
+                    )
+                for candidate in evaluated.economic_decision.candidates:
+                    if not candidate.eligible:
+                        self._audit(
+                            conn,
+                            ctx,
+                            clock,
+                            "ECONOMIC_ACTION_REJECTED",
+                            candidate.action_id,
+                            "economic_engine",
+                            candidate.reason,
+                            {
+                                "expected_net_value": candidate.expected_net_value,
+                                "intervention_cost": candidate.intervention_cost,
+                            },
+                        )
+
+            if evaluated.capacity_decision:
+                event = (
+                    "CAPACITY_DEFERRED"
+                    if evaluated.capacity_decision.startswith("deferred")
+                    else "CAPACITY_ALLOCATED"
+                )
+                self._audit(
+                    conn,
+                    ctx,
+                    clock,
+                    event,
+                    evaluated.selected_action.action_id if evaluated.selected_action else None,
+                    "economic_engine",
+                    evaluated.capacity_decision,
+                    {"step": step + 1},
+                )
+
             for check in evaluated.policy_checks:
                 self._audit(
                     conn,
