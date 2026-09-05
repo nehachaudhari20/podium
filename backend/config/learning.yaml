@@ -1,0 +1,23 @@
+# Outcome-driven learning controls (Phase 8) — bounded evidence, not self-modification.
+
+enabled: true
+
+# blended = alpha * model_probability + (1 - alpha) * historical_success_rate
+alpha: 0.65
+
+# Minimum observations before historical evidence influences estimates
+min_observations_for_blend: 3
+
+# Confidence by sample size
+confidence:
+  low_max: 4
+  medium_max: 19
+  # 20+ → high
+
+# Laplace/pseudocount smoothing for cold-start rates
+smoothing_successes: 1
+smoothing_failures: 1
+
+# Probability clamp
+min_probability: 0.01
+max_probability: 0.99

@@ -33,3 +33,7 @@ def load_actions(config_dir: Path | None = None) -> dict[str, Any]:
 
 def load_economics(config_dir: Path | None = None) -> dict[str, Any]:
     return load_yaml("economics.yaml", config_dir)
+
+
+def load_learning(config_dir: Path | None = None) -> dict[str, Any]:
+    return load_yaml("learning.yaml", config_dir)

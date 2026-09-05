@@ -156,3 +156,30 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_events(case_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
+
+-- Phase 8: decision → outcome learning records (runtime-safe; never stores p_pay_anyway)
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+    outcome_id                      TEXT PRIMARY KEY,
+    case_id                         TEXT NOT NULL REFERENCES recovery_cases(case_id),
+    customer_id                     TEXT NOT NULL,
+    lane                            TEXT NOT NULL,
+    action                          TEXT NOT NULL,
+    diagnosis                       TEXT,
+    decision_source                 TEXT,
+    amount_at_risk                  REAL NOT NULL,
+    intervention_cost               REAL NOT NULL DEFAULT 0,
+    estimated_recovery_probability  REAL,
+    observed_recovered              INTEGER NOT NULL DEFAULT 0,
+    partially_recovered             INTEGER NOT NULL DEFAULT 0,
+    amount_recovered                REAL NOT NULL DEFAULT 0,
+    amount_remaining                REAL NOT NULL DEFAULT 0,
+    state_before                    TEXT,
+    state_after                     TEXT,
+    timestamp                       TEXT NOT NULL,
+    metadata                        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_action ON decision_outcomes(action);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_lane ON decision_outcomes(lane);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_case ON decision_outcomes(case_id);
+
