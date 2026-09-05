@@ -71,6 +71,8 @@ class DeterministicStrategyIntelligence:
     ) -> list[RecoveryAction]:
         if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
             return self._reorder_checkout(context, actions)
+        if context.case.lane == Lane.RECEIVABLE.value:
+            return self._reorder_receivable(context, actions)
 
         if not context.derived_signals.repeated_failure:
             return actions
@@ -93,6 +95,20 @@ class DeterministicStrategyIntelligence:
         if not last:
             return actions
         # Push previously executed action later to encourage re-planning diversity.
+        preferred = [a for a in actions if a.action_id != last]
+        repeated = [a for a in actions if a.action_id == last]
+        return preferred + repeated
+
+    def _reorder_receivable(
+        self,
+        context: RecoveryContext,
+        actions: list[RecoveryAction],
+    ) -> list[RecoveryAction]:
+        if context.derived_signals.active_promise:
+            return actions
+        last = context.case.last_action
+        if not last:
+            return actions
         preferred = [a for a in actions if a.action_id != last]
         repeated = [a for a in actions if a.action_id == last]
         return preferred + repeated
@@ -120,6 +136,18 @@ class DeterministicStrategyIntelligence:
             and context.derived_signals.high_intent
         ):
             base = min(0.92, base + 0.12)
+        if context.case.lane == Lane.RECEIVABLE.value:
+            if action.action_id == "invoice_reminder" and context.derived_signals.mildly_overdue:
+                base = min(0.90, base + 0.10)
+            if action.action_id == "promise_to_pay_request" and context.derived_signals.aged_overdue:
+                base = min(0.88, base + 0.08)
+            if action.action_id == "track_promise_to_pay" and context.derived_signals.active_promise:
+                base = 0.80
+            if (
+                action.action_id in {"human_escalation", "escalate_collections"}
+                and context.derived_signals.promise_broken_before
+            ):
+                base = min(0.90, base + 0.15)
         return round(min(0.99, max(0.01, base)), 4)
 
     def _action_rationale(self, context: RecoveryContext, action: RecoveryAction) -> str:
@@ -138,6 +166,14 @@ class DeterministicStrategyIntelligence:
             return "Bounded incentive considered only because context suggests price sensitivity under policy."
         if action.action_id == "stop_recovery":
             return "Intervention cost outweighs expected recovery; stop further checkout outreach."
+        if action.action_id == "invoice_reminder" and signals.mildly_overdue:
+            return "Recently overdue invoice; low-friction reminder is preferred."
+        if action.action_id == "promise_to_pay_request":
+            return "Request a payment commitment to structure receivable recovery."
+        if action.action_id == "track_promise_to_pay":
+            return "Active promise exists; track the commitment instead of stacking outreach."
+        if action.action_id == "escalate_collections" and signals.promise_broken_before:
+            return "Broken promise history; collections escalation may be warranted."
         return f"Candidate action: {action.label}"
 
 

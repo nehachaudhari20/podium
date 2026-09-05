@@ -50,7 +50,7 @@ def test_basic_context_construction(ctx_db):
     assert context.case.case_id == case_id
     assert context.case.lane == "subscription_payment"
     assert context.customer.customer_id == context.case.customer_id
-    assert context.schema_version == "6a.1"
+    assert context.schema_version == "7a.1"
     assert_no_forbidden_fields(context.to_dict())
 
 

@@ -13,6 +13,8 @@ class DeterministicPredictiveIntelligence:
     def score(self, context: RecoveryContext) -> PredictiveSignals:
         if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
             return self._score_checkout(context)
+        if context.case.lane == Lane.RECEIVABLE.value:
+            return self._score_receivable(context)
         return self._score_subscription(context)
 
     def _score_subscription(self, context: RecoveryContext) -> PredictiveSignals:
@@ -91,6 +93,62 @@ class DeterministicPredictiveIntelligence:
             recovery_prob = max(0.05, recovery_prob - 0.20)
 
         if signals.recovery_attempted_before:
+            recovery_prob = max(0.10, recovery_prob - 0.08)
+
+        return PredictiveSignals(
+            estimated_recovery_probability=round(recovery_prob, 4),
+            retry_success_likelihood=round(retry_likelihood, 4),
+            responsiveness_score=round(min(1.0, responsiveness), 4),
+            source="deterministic",
+        )
+
+    def _score_receivable(self, context: RecoveryContext) -> PredictiveSignals:
+        signals = context.derived_signals
+        invoice = context.invoice
+        amount = invoice.amount if invoice is not None else context.case.amount
+        days = context.case.days_overdue or (invoice.days_overdue if invoice else 0)
+
+        recovery_prob = 0.50
+        retry_likelihood = 0.35
+        responsiveness = 0.52
+
+        if signals.mildly_overdue and signals.first_failure:
+            recovery_prob = 0.68
+            responsiveness = 0.70
+        elif signals.aged_overdue:
+            recovery_prob = 0.55
+            responsiveness = 0.55
+        elif signals.severely_overdue:
+            recovery_prob = 0.32
+            responsiveness = 0.30
+
+        if signals.high_value_invoice or amount >= 50000:
+            recovery_prob = min(0.88, recovery_prob + 0.08)
+
+        if signals.prior_successful_payment:
+            recovery_prob = min(0.92, recovery_prob + 0.08)
+            responsiveness = min(1.0, responsiveness + 0.10)
+
+        if signals.active_promise:
+            recovery_prob = min(0.90, recovery_prob + 0.12)
+            responsiveness = min(1.0, responsiveness + 0.15)
+
+        if signals.promise_broken_before:
+            recovery_prob = max(0.12, recovery_prob - 0.18)
+            responsiveness = max(0.08, responsiveness - 0.20)
+
+        if signals.partial_payment_received:
+            recovery_prob = min(0.85, recovery_prob + 0.10)
+
+        if signals.customer_non_response:
+            responsiveness = max(0.05, responsiveness - 0.22)
+            recovery_prob = max(0.10, recovery_prob - 0.10)
+
+        if signals.customer_opt_out:
+            responsiveness = 0.0
+            recovery_prob = max(0.05, recovery_prob - 0.20)
+
+        if days >= 45:
             recovery_prob = max(0.10, recovery_prob - 0.08)
 
         return PredictiveSignals(

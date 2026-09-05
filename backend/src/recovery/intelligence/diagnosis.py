@@ -7,6 +7,7 @@ against VALID_CAUSES.
 from __future__ import annotations
 
 from recovery.intelligence.checkout_diagnosis import CHECKOUT_CAUSES, diagnose_checkout
+from recovery.intelligence.receivable_diagnosis import RECEIVABLE_CAUSES, diagnose_receivable
 from recovery.models.case import RecoveryCaseRuntime
 from recovery.models.enums import Lane
 from recovery.models.recovery_context import RecoveryContext
@@ -62,7 +63,10 @@ FAILURE_TO_CAUSE: dict[str, tuple[str, float, str]] = {
 
 
 VALID_CAUSES = frozenset(
-    {entry[0] for entry in FAILURE_TO_CAUSE.values()} | {"unknown_failure"} | CHECKOUT_CAUSES
+    {entry[0] for entry in FAILURE_TO_CAUSE.values()}
+    | {"unknown_failure"}
+    | CHECKOUT_CAUSES
+    | RECEIVABLE_CAUSES
 )
 
 
@@ -73,10 +77,12 @@ def diagnose(
     """Return a structured diagnosis for a recovery case."""
     if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
         return diagnose_checkout(case, context)
-
+    if case.lane == Lane.RECEIVABLE.value:
+        return diagnose_receivable(case, context)
     if case.lane != Lane.SUBSCRIPTION_PAYMENT.value:
         raise ValueError(
-            f"Diagnosis supports subscription_payment and checkout_abandonment only, got {case.lane}"
+            "Diagnosis supports subscription_payment, checkout_abandonment, "
+            f"and receivable only, got {case.lane}"
         )
 
     reason = case.failure_reason or "unknown"

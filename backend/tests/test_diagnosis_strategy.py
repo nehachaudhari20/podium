@@ -56,9 +56,19 @@ def test_diagnose_transient_failures():
 
 
 def test_diagnose_rejects_unsupported_lane():
-    case = _subscription_case("insufficient_funds", lane=Lane.RECEIVABLE.value)
-    with pytest.raises(ValueError, match="subscription_payment and checkout_abandonment"):
+    case = _subscription_case("insufficient_funds", lane="unknown_lane")
+    with pytest.raises(ValueError, match="subscription_payment"):
         diagnose(case)
+
+
+def test_diagnose_receivable_mild_overdue():
+    case = _subscription_case(
+        "invoice_mild_overdue",
+        lane=Lane.RECEIVABLE.value,
+        source_ref_id="inv_test_001",
+    )
+    result = diagnose(case)
+    assert result.likely_cause == "customer_oversight"
 
 
 def test_diagnose_checkout_payment_page_drop():

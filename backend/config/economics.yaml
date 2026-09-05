@@ -38,10 +38,18 @@ action_costs:
   # limited_incentive cost is derived from amount * incentive_cost_pct
   limited_incentive: 0
   offer_discount: 0
+  invoice_reminder: 2
+  statement_resend: 2
+  payment_assistance: 5
+  promise_to_pay_request: 2
+  promise_confirmation: 2
+  track_promise_to_pay: 0
+  escalate_collections: 750
 
 # Capacity pool key for scarce actions (omit = unlimited / no capacity gate)
 scarce_capacity:
   voice_call: voice_call
   human_escalation: human_escalation
+  escalate_collections: human_escalation
   limited_incentive: incentive_budget
   offer_discount: incentive_budget

@@ -10,6 +10,7 @@ from recovery.ingestion.synthetic.generator import generate_and_persist
 from recovery.models.enums import Lane
 from recovery.paths import DEFAULT_DB_PATH
 from recovery.pipeline.checkout_runner import run_checkout_case
+from recovery.pipeline.receivables_runner import run_receivable_case
 from recovery.pipeline.subscription_runner import format_run_summary, run_subscription_case
 from recovery.state.reset import reset_case_for_run
 
@@ -29,12 +30,16 @@ def generate_data() -> None:
 
 
 def run_case() -> None:
-    """Run a single recovery case (subscription or checkout) — Phase 2/4C."""
+    """Run a single recovery case (subscription, checkout, or receivable)."""
     parser = argparse.ArgumentParser(description="Run one recovery case by lane")
     parser.add_argument("--case-id", type=str, default=None, help="Recovery case ID")
     parser.add_argument(
         "--lane",
-        choices=("subscription_payment", "checkout_abandonment"),
+        choices=(
+            "subscription_payment",
+            "checkout_abandonment",
+            "receivable",
+        ),
         default=None,
         help="Lane filter when selecting a default case (optional)",
     )
@@ -97,6 +102,8 @@ def run_case() -> None:
         result = run_checkout_case(conn, case_id, intelligence_mode=args.intelligence)
     elif lane == Lane.SUBSCRIPTION_PAYMENT.value:
         result = run_subscription_case(conn, case_id, intelligence_mode=args.intelligence)
+    elif lane == Lane.RECEIVABLE.value:
+        result = run_receivable_case(conn, case_id, intelligence_mode=args.intelligence)
     else:
         conn.close()
         raise SystemExit(f"Unsupported lane for run_case: {lane}")
@@ -127,11 +134,12 @@ def run_evaluation() -> None:
         choices=(
             Lane.SUBSCRIPTION_PAYMENT.value,
             Lane.CHECKOUT_ABANDONMENT.value,
+            Lane.RECEIVABLE.value,
             "economics",
             "coordination",
         ),
         default=Lane.SUBSCRIPTION_PAYMENT.value,
-        help="Evaluation lane (use economics / coordination for Phase 5/6)",
+        help="Evaluation lane (use economics / coordination / receivable for Phase 5/6/7)",
     )
     parser.add_argument(
         "--intelligence",
@@ -173,6 +181,21 @@ def run_evaluation() -> None:
             if args.export_json:
                 export_phase6_evaluation_json(summary, default_phase6_export_path())
                 print(f"Exported: {default_phase6_export_path()}")
+        elif args.lane == Lane.RECEIVABLE.value:
+            from recovery.evaluation.phase7_runner import (
+                default_phase7_export_path,
+                export_phase7_evaluation_json,
+                format_phase7_evaluation_report,
+                run_phase7_evaluation,
+            )
+
+            summary = run_phase7_evaluation(
+                conn, intelligence_mode=args.intelligence, limit=args.limit or 25
+            )
+            print(format_phase7_evaluation_report(summary))
+            if args.export_json:
+                export_phase7_evaluation_json(summary, default_phase7_export_path())
+                print(f"Exported: {default_phase7_export_path()}")
         elif args.lane == "economics":
             from recovery.evaluation.phase5_runner import (
                 default_phase5_export_path,
@@ -224,7 +247,7 @@ def run_evaluation() -> None:
             export_path_fn = default_export_path
             compare_name = "phase3_evaluation_compare.json"
 
-        if args.lane not in {"economics", "coordination"}:
+        if args.lane not in {"economics", "coordination", Lane.RECEIVABLE.value}:
             if args.compare:
                 summaries = compare_fn(conn, limit=args.limit)
                 for mode, summary in summaries.items():

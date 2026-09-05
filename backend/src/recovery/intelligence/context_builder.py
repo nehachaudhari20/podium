@@ -11,6 +11,11 @@ from recovery.ingestion.checkout_loader import (
     load_checkout_session_by_case,
 )
 from recovery.ingestion.customer_loader import load_customer_context
+from recovery.ingestion.invoice_loader import (
+    load_active_promise_by_case,
+    load_invoice_by_case,
+    load_promises_for_case,
+)
 from recovery.ingestion.runtime_loader import load_case_by_id
 from recovery.models.case import RecoveryCaseRuntime
 from recovery.models.enums import Lane
@@ -20,6 +25,8 @@ from recovery.models.recovery_context import (
     CrossRevenueFacts,
     CustomerHistorySnapshot,
     DerivedSignals,
+    InvoiceFacts,
+    PromiseFacts,
     RecoveryContext,
     RecoveryHistoryEvent,
     SiblingCaseFacts,
@@ -50,14 +57,31 @@ ACTION_EVENT_TYPES = frozenset(
         "AGENT_OBSERVE",
         "AGENT_REPLAN",
         "DECISION_PROPOSED",
+        "PROMISE_CREATED",
+        "PROMISE_DUE",
+        "PROMISE_KEPT",
+        "PROMISE_BROKEN",
+        "PARTIAL_PAYMENT_RECEIVED",
     }
 )
 
 HIGH_INTENT_THRESHOLD = 0.7
 HIGH_VALUE_CART_INR = 15000.0
+HIGH_VALUE_INVOICE_INR = 50000.0
 RECENT_ABANDONMENT_HOURS = 24.0
 EARLY_STAGES = frozenset({"cart", "shipping"})
 PAYMENT_STAGES = frozenset({"payment_page", "payment"})
+RECEIVABLE_CONTACT_ACTIONS = frozenset(
+    {
+        "invoice_reminder",
+        "payment_link",
+        "promise_to_pay_request",
+        "statement_resend",
+        "payment_assistance",
+        "human_escalation",
+        "escalate_collections",
+    }
+)
 
 
 class ContextBuilder:
@@ -95,6 +119,8 @@ class ContextBuilder:
 
         case_facts = self._build_case_facts(case, run_context)
         checkout_facts = self._build_checkout_facts(conn, case, now)
+        invoice_facts = self._build_invoice_facts(conn, case, run_context)
+        promise_facts = self._build_promise_facts(conn, case)
         prior_checkouts = 0
         if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
             prior_checkouts = count_prior_checkout_abandonments(
@@ -108,8 +134,12 @@ class ContextBuilder:
             recovery_history,
             now,
             checkout=checkout_facts,
+            invoice=invoice_facts,
+            promise=promise_facts,
             prior_checkout_abandonments=prior_checkouts,
             cross_revenue=cross_revenue,
+            run_context=run_context,
+            conn=conn,
         )
 
         context = RecoveryContext(
@@ -120,6 +150,8 @@ class ContextBuilder:
             built_at=utc_now_iso(),
             checkout=checkout_facts,
             cross_revenue=cross_revenue,
+            invoice=invoice_facts,
+            promise=promise_facts,
         )
         assert_no_forbidden_fields(context.to_dict())
         return context
@@ -187,6 +219,78 @@ class ContextBuilder:
             abandoned_at=abandoned.isoformat(),
             items_count=session.items_count,
             hours_since_abandonment=round(hours, 2),
+        )
+
+    def _build_invoice_facts(
+        self,
+        conn: sqlite3.Connection,
+        case: RecoveryCaseRuntime,
+        run_context: CaseRunContext | None,
+    ) -> InvoiceFacts | None:
+        if case.lane != Lane.RECEIVABLE.value:
+            return None
+        invoice = load_invoice_by_case(conn, case.case_id)
+        if invoice is None:
+            remaining = (
+                run_context.remaining_balance
+                if run_context is not None and run_context.remaining_balance is not None
+                else case.amount
+            )
+            return InvoiceFacts(
+                invoice_id=case.source_ref_id,
+                amount=case.amount,
+                currency=case.currency,
+                due_date=case.created_at.isoformat(),
+                days_overdue=int(case.days_overdue or 0),
+                status="overdue",
+                invoice_type="b2b",
+                remaining_balance=float(remaining),
+            )
+        remaining = (
+            run_context.remaining_balance
+            if run_context is not None and run_context.remaining_balance is not None
+            else float(invoice.amount)
+        )
+        if run_context is not None:
+            remaining = max(0.0, round(float(invoice.amount) - run_context.amount_paid, 2))
+            run_context.remaining_balance = remaining
+        return InvoiceFacts(
+            invoice_id=invoice.invoice_id,
+            amount=float(invoice.amount),
+            currency=invoice.currency,
+            due_date=invoice.due_date.isoformat(),
+            days_overdue=int(invoice.days_overdue),
+            status=invoice.status,
+            invoice_type=invoice.invoice_type,
+            remaining_balance=remaining,
+        )
+
+    def _build_promise_facts(
+        self,
+        conn: sqlite3.Connection,
+        case: RecoveryCaseRuntime,
+    ) -> PromiseFacts | None:
+        if case.lane != Lane.RECEIVABLE.value:
+            return None
+        active = load_active_promise_by_case(conn, case.case_id)
+        if active is not None:
+            return PromiseFacts(
+                promise_id=active.promise_id,
+                promised_amount=float(active.promised_amount),
+                promise_date=active.promise_date.isoformat(),
+                status=active.status,
+                created_at=active.created_at.isoformat(),
+            )
+        promises = load_promises_for_case(conn, case.case_id)
+        if not promises:
+            return None
+        latest = promises[-1]
+        return PromiseFacts(
+            promise_id=latest.promise_id,
+            promised_amount=float(latest.promised_amount),
+            promise_date=latest.promise_date.isoformat(),
+            status=latest.status,
+            created_at=latest.created_at.isoformat(),
         )
 
     def _load_customer_snapshot(
@@ -323,8 +427,12 @@ class ContextBuilder:
         now: datetime,
         *,
         checkout: CheckoutSessionFacts | None = None,
+        invoice: InvoiceFacts | None = None,
+        promise: PromiseFacts | None = None,
         prior_checkout_abandonments: int = 0,
         cross_revenue: CrossRevenueFacts | None = None,
+        run_context: CaseRunContext | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> DerivedSignals:
         policy = load_policy_config()
         reason = case.failure_reason or ""
@@ -344,6 +452,7 @@ class ContextBuilder:
                 "checkout_reminder",
                 "payment_link",
                 "checkout_assistance",
+                *RECEIVABLE_CONTACT_ACTIONS,
             )
             for e in history
         )
@@ -383,6 +492,35 @@ class ContextBuilder:
         multi_lane = bool(cross_revenue and cross_revenue.multi_lane_active)
         has_siblings = bool(cross_revenue and cross_revenue.sibling_cases)
 
+        days = case.days_overdue if case.days_overdue is not None else (
+            invoice.days_overdue if invoice is not None else 0
+        )
+        active_promise = bool(promise is not None and promise.status == "active")
+        if run_context is not None and run_context.active_promise_id:
+            active_promise = True
+        promise_broken_before = bool(
+            (run_context is not None and run_context.promise_broken_before)
+            or reason == "promise_missed"
+            or (promise is not None and promise.status == "missed")
+        )
+        if conn is not None and case.lane == Lane.RECEIVABLE.value:
+            prior_missed = load_promises_for_case(conn, case.case_id)
+            if any(p.status == "missed" for p in prior_missed):
+                promise_broken_before = True
+
+        mildly_overdue = days <= 10
+        aged_overdue = 10 < days < 45
+        severely_overdue = days >= 45
+        high_value_invoice = bool(
+            (invoice is not None and invoice.amount >= HIGH_VALUE_INVOICE_INR)
+            or case.amount >= HIGH_VALUE_INVOICE_INR
+        )
+        partial_payment_received = bool(
+            run_context is not None
+            and run_context.amount_paid > 0
+            and (run_context.remaining_balance or 0) > 0
+        )
+
         return DerivedSignals(
             first_failure=first_failure,
             repeated_failure=repeated_failure,
@@ -404,6 +542,13 @@ class ContextBuilder:
             recovery_attempted_before=recovery_attempted_before,
             multi_lane_active=multi_lane,
             has_sibling_open_cases=has_siblings,
+            active_promise=active_promise,
+            promise_broken_before=promise_broken_before,
+            mildly_overdue=mildly_overdue,
+            aged_overdue=aged_overdue,
+            severely_overdue=severely_overdue,
+            high_value_invoice=high_value_invoice,
+            partial_payment_received=partial_payment_received,
         )
 
 

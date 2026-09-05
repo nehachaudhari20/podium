@@ -1,8 +1,12 @@
-"""Rule-based recovery strategy — subscription (Phase 2) + checkout (Phase 4B)."""
+"""Rule-based recovery strategy — subscription, checkout, receivable."""
 
 from __future__ import annotations
 
 from recovery.intelligence.checkout_strategy import CHECKOUT_CAUSE_ACTIONS, generate_checkout_actions
+from recovery.intelligence.receivable_strategy import (
+    RECEIVABLE_CAUSE_ACTIONS,
+    generate_receivable_actions,
+)
 from recovery.models.case import RecoveryCaseRuntime
 from recovery.models.enums import Lane
 from recovery.models.recovery_context import RecoveryContext
@@ -86,6 +90,8 @@ def generate_actions(
     """Return ordered candidate recovery actions for a diagnosed case."""
     if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
         return generate_checkout_actions(case, diagnosis, context)
+    if case.lane == Lane.RECEIVABLE.value:
+        return generate_receivable_actions(case, diagnosis, context)
 
     actions = CAUSE_ACTIONS.get(diagnosis.likely_cause, CAUSE_ACTIONS["unknown_failure"])
     return list(actions)
@@ -93,6 +99,12 @@ def generate_actions(
 
 def runtime_pool_for_cause(likely_cause: str, *, lane: str | None = None) -> list[RecoveryAction]:
     """Union lookup for action bridging across lanes."""
+    if lane == Lane.RECEIVABLE.value or likely_cause in RECEIVABLE_CAUSE_ACTIONS:
+        return list(
+            RECEIVABLE_CAUSE_ACTIONS.get(
+                likely_cause, RECEIVABLE_CAUSE_ACTIONS["unknown_receivable_risk"]
+            )
+        )
     if lane == Lane.CHECKOUT_ABANDONMENT.value or likely_cause in CHECKOUT_CAUSE_ACTIONS:
         return list(
             CHECKOUT_CAUSE_ACTIONS.get(likely_cause, CHECKOUT_CAUSE_ACTIONS["unknown_abandonment"])

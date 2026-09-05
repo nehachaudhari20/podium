@@ -18,6 +18,20 @@ CHECKOUT_ACTIONS = frozenset(
         "stop_recovery",
     }
 )
+RECEIVABLE_ACTIONS = frozenset(
+    {
+        "invoice_reminder",
+        "payment_link",
+        "statement_resend",
+        "payment_assistance",
+        "promise_to_pay_request",
+        "promise_confirmation",
+        "track_promise_to_pay",
+        "human_escalation",
+        "escalate_collections",
+        "stop_recovery",
+    }
+)
 
 
 def simulate_execution(
@@ -35,16 +49,19 @@ def simulate_execution(
             detail="Customer notified to update payment method.",
         )
 
-    if action.action_id == "human_escalation":
+    if action.action_id in {"human_escalation", "escalate_collections"}:
         return ExecutionResult(
             action=action.action_id,
             success=True,
             event="escalated",
-            detail="Case escalated to human recovery agent.",
+            detail="Case escalated to human recovery / collections.",
         )
 
     if action.action_id in RETRY_ACTIONS:
         return _simulate_retry(ctx, action, diagnosis)
+
+    if ctx.case.lane == Lane.RECEIVABLE.value or action.action_id in RECEIVABLE_ACTIONS:
+        return _simulate_receivable(ctx, action, diagnosis)
 
     if action.action_id in CHECKOUT_ACTIONS or ctx.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
         return _simulate_checkout(ctx, action, diagnosis)
@@ -54,6 +71,109 @@ def simulate_execution(
         success=False,
         event="unsupported_action",
         detail=f"No simulator handler for action '{action.action_id}'.",
+    )
+
+
+def _simulate_receivable(
+    ctx: CaseRunContext,
+    action: RecoveryAction,
+    diagnosis: DiagnosisResult,
+) -> ExecutionResult:
+    """Deterministic receivable intervention outcomes."""
+    cause = diagnosis.likely_cause
+
+    if action.action_id == "stop_recovery":
+        return ExecutionResult(
+            action=action.action_id,
+            success=True,
+            event="recovery_stopped",
+            detail="Receivable recovery stopped.",
+        )
+
+    if action.action_id == "track_promise_to_pay":
+        return ExecutionResult(
+            action=action.action_id,
+            success=True,
+            event="promise_due_check",
+            detail="Tracking active promise-to-pay until due date.",
+        )
+
+    ctx.attempt_count += 1
+
+    if action.action_id == "promise_to_pay_request":
+        return ExecutionResult(
+            action=action.action_id,
+            success=True,
+            event="promise_created",
+            detail="Customer agreed to a promise-to-pay.",
+        )
+
+    if action.action_id == "promise_confirmation":
+        return ExecutionResult(
+            action=action.action_id,
+            success=True,
+            event="promise_confirmed",
+            detail="Promise-to-pay confirmed with customer.",
+        )
+
+    if action.action_id in {"invoice_reminder", "statement_resend"}:
+        # Low-friction outreach alone rarely clears aged receivables immediately.
+        if cause == "customer_oversight" and (ctx.case.days_overdue or 0) <= 7 and ctx.attempt_count >= 2:
+            return ExecutionResult(
+                action=action.action_id,
+                success=True,
+                event="payment_received",
+                detail="Customer paid after invoice reminder.",
+            )
+        return ExecutionResult(
+            action=action.action_id,
+            success=False,
+            event="customer_ignored",
+            detail="Invoice reminder delivered; no payment yet.",
+        )
+
+    if action.action_id == "payment_link":
+        if cause in {"customer_oversight", "payment_processing_delay"} and ctx.attempt_count >= 2:
+            return ExecutionResult(
+                action=action.action_id,
+                success=True,
+                event="payment_received",
+                detail="Customer paid via payment link.",
+            )
+        if cause == "low_responsiveness":
+            return ExecutionResult(
+                action=action.action_id,
+                success=False,
+                event="customer_ignored",
+                detail="Payment link sent; customer did not respond.",
+            )
+        return ExecutionResult(
+            action=action.action_id,
+            success=False,
+            event="customer_ignored",
+            detail="Payment link sent; awaiting payment.",
+        )
+
+    if action.action_id == "payment_assistance":
+        if cause in {"approval_delay", "temporary_cash_constraint"} or ctx.attempt_count >= 2:
+            return ExecutionResult(
+                action=action.action_id,
+                success=True,
+                event="promise_created",
+                detail="Assistance led to a payment promise.",
+            )
+        return ExecutionResult(
+            action=action.action_id,
+            success=False,
+            event="customer_ignored",
+            detail="Payment assistance offered; no commitment yet.",
+        )
+
+    return ExecutionResult(
+        action=action.action_id,
+        success=False,
+        event="customer_ignored",
+        detail=f"Receivable action '{action.action_id}' did not clear exposure.",
     )
 
 

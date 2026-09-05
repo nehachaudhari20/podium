@@ -19,6 +19,8 @@ class DeterministicReasoningIntelligence:
 
         if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
             summary = _checkout_summary(context, diagnosis.likely_cause, diagnosis.rationale)
+        elif context.case.lane == Lane.RECEIVABLE.value:
+            summary = _receivable_summary(context, diagnosis.likely_cause, diagnosis.rationale)
         elif context.derived_signals.repeated_failure:
             summary = (
                 f"Repeated failure pattern for {diagnosis.likely_cause}; "
@@ -53,6 +55,21 @@ def _checkout_summary(context: RecoveryContext, cause: str, rationale: str) -> s
         return "Low-intent abandonment; keep intervention bounded or stop recovery."
     if signals.recovery_attempted_before and signals.customer_non_response:
         return f"{cause}: prior intervention without response; re-plan to a different action."
+    return rationale
+
+
+def _receivable_summary(context: RecoveryContext, cause: str, rationale: str) -> str:
+    signals = context.derived_signals
+    if signals.active_promise:
+        return f"{cause}: active promise-to-pay; track commitment before further outreach."
+    if signals.promise_broken_before:
+        return f"{cause}: prior promise broken; re-plan with stronger follow-up."
+    if signals.partial_payment_received:
+        return f"{cause}: partial payment received; continue recovery for remaining balance."
+    if signals.mildly_overdue:
+        return f"{cause}: recently overdue; prefer low-friction reminder or payment link."
+    if signals.high_value_invoice:
+        return f"{cause}: high-value overdue invoice; economics may justify stronger intervention."
     return rationale
 
 

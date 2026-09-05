@@ -19,10 +19,16 @@ CONTACT_ACTION_IDS = frozenset(
         "payment_link",
         "checkout_assistance",
         "human_escalation",
+        "invoice_reminder",
+        "promise_to_pay_request",
+        "statement_resend",
+        "payment_assistance",
+        "escalate_collections",
+        "promise_confirmation",
     }
 )
 INCENTIVE_ACTION_IDS = frozenset({"limited_incentive", "offer_discount"})
-HUMAN_ACTION_IDS = frozenset({"human_escalation"})
+HUMAN_ACTION_IDS = frozenset({"human_escalation", "escalate_collections"})
 
 
 @dataclass(frozen=True, slots=True)

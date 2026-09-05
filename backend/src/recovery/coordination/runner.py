@@ -22,8 +22,6 @@ from recovery.ingestion.runtime_loader import load_case_by_id
 from recovery.intelligence.context_builder import build_recovery_context
 from recovery.intelligence.decision_config import DecisionConfig
 from recovery.intelligence.decisioning import HybridDecisionIntelligence
-from recovery.models.enums import Lane
-from recovery.models.recovery_types import RecoveryAction
 from recovery.policy.gate import check_policy
 
 
@@ -39,32 +37,7 @@ def propose_intervention_for_case(
     if case is None:
         return None
 
-    # Receivable: coordination-visible stub (full receivables recovery is Phase 7).
-    if case.lane == Lane.RECEIVABLE.value:
-        action = RecoveryAction(
-            "human_escalation",
-            "Human follow-up on overdue invoice",
-            "human",
-            is_contact=True,
-        )
-        customer = load_customer_context(conn, case.customer_id)
-        policy = check_policy(case, action, customer, conn, now=now)
-        # Simple ENV estimate without full predictive stack
-        probability = 0.55 if (case.days_overdue or 0) < 45 else 0.35
-        cost = 500.0
-        erv = case.amount * probability
-        return ProposedIntervention(
-            case_id=case.case_id,
-            lane=case.lane,
-            amount=case.amount,
-            action=action,
-            expected_net_value=round(erv - cost, 4),
-            expected_recovery_value=round(erv, 4),
-            intervention_cost=cost,
-            policy_allowed=policy.allowed,
-            policy_reason=policy.reason,
-        )
-
+    # Receivable cases use the same intelligence + economics path as other lanes.
     decision_config = DecisionConfig(
         mode=intelligence_mode,
         min_reasoning_confidence=DecisionConfig.from_env().min_reasoning_confidence,
@@ -73,9 +46,12 @@ def propose_intervention_for_case(
     engine = HybridDecisionIntelligence(config=decision_config)
     context = build_recovery_context(conn, case_id, now=now)
     proposal = engine.propose_decision(context)
+    amount_at_risk = case.amount
+    if context.invoice is not None:
+        amount_at_risk = context.invoice.remaining_balance
     econ = select_best_economic_action(
         list(proposal.candidate_actions),
-        amount_at_risk=case.amount,
+        amount_at_risk=amount_at_risk,
         predictive=proposal.predictive,
         config=load_economics_config(),
     )
@@ -124,7 +100,7 @@ def propose_intervention_for_case(
     return ProposedIntervention(
         case_id=case.case_id,
         lane=case.lane,
-        amount=case.amount,
+        amount=amount_at_risk,
         action=selected_action,
         expected_net_value=env,
         expected_recovery_value=erv,

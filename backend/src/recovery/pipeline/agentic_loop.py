@@ -13,13 +13,21 @@ from recovery.execution.outcomes import is_terminal_state, process_outcome
 from recovery.execution.sim_clock import SimulatedClock
 from recovery.execution.simulator import simulate_execution
 from recovery.ingestion.customer_loader import CustomerContext
+from recovery.ingestion.invoice_loader import load_active_promise_by_case, load_invoice_by_case
 from recovery.intelligence.context_builder import build_recovery_context
 from recovery.intelligence.contracts import DecisionProposal
 from recovery.intelligence.decision_evaluator import EvaluatedDecision, evaluate_decision_proposal
 from recovery.intelligence.decisioning import HybridDecisionIntelligence
-from recovery.models.enums import WorkflowState
+from recovery.models.enums import Lane, WorkflowState
 from recovery.models.recovery_types import DiagnosisResult, ExecutionResult, PolicyResult, RecoveryAction
 from recovery.policy.gate import PolicyConfig
+from recovery.promises import (
+    create_promise,
+    default_promise_date,
+    observe_promise_payment,
+    update_promise_status,
+    validate_promise,
+)
 from recovery.state.context import CaseRunContext
 from recovery.state.machine import apply_transition, can_transition
 from recovery.state.persistence import log_recovery_action
@@ -351,7 +359,17 @@ class AgenticRecoveryLoop:
                 {"event": execution.event, "success": execution.success, "step": step + 1},
             )
 
-            outcome = process_outcome(ctx, execution)
+            # Receivable PTP: create / observe before generic outcome processing.
+            if ctx.case.lane == Lane.RECEIVABLE.value and execution.event in {
+                "promise_created",
+                "promise_due_check",
+            }:
+                execution, outcome = self._handle_promise_lifecycle(
+                    conn, ctx, clock, execution, result.diagnosis
+                )
+            else:
+                outcome = process_outcome(ctx, execution)
+
             outcome_summary = outcome.summary
             if outcome.trigger and can_transition(ctx, outcome.trigger):
                 self._apply_and_audit(conn, ctx, clock, outcome.trigger, "outcome_engine", outcome.summary)
@@ -383,10 +401,15 @@ class AgenticRecoveryLoop:
                 break
 
             if (
-                execution.event in {"payment_failed", "customer_ignored"}
+                execution.event
+                in {"payment_failed", "customer_ignored", "promise_broken", "partial_payment_received"}
                 and outcome.trigger != "max_retries_exceeded"
             ):
-                if ctx.workflow_state != WorkflowState.WAITING.value:
+                if ctx.workflow_state not in {
+                    WorkflowState.WAITING.value,
+                    WorkflowState.PROMISED.value,
+                    WorkflowState.ESCALATED.value,
+                }:
                     ctx.record_state(WorkflowState.WAITING.value)
                     self._audit(
                         conn,
@@ -481,6 +504,279 @@ class AgenticRecoveryLoop:
         if action.action_id == "human_escalation" and can_transition(ctx, "escalated"):
             self._apply_and_audit(conn, ctx, clock, "escalated", "state_machine", "Escalating to human agent.")
 
+        if action.action_id == "escalate_collections" and can_transition(ctx, "escalated"):
+            self._apply_and_audit(
+                conn, ctx, clock, "escalated", "state_machine", "Escalating to collections."
+            )
+
+        if action.action_id == "track_promise_to_pay" and ctx.workflow_state != WorkflowState.PROMISED.value:
+            if can_transition(ctx, "promise_made"):
+                self._apply_and_audit(
+                    conn, ctx, clock, "promise_made", "state_machine", "Tracking active promise."
+                )
+
+    def _handle_promise_lifecycle(
+        self,
+        conn: sqlite3.Connection,
+        ctx: CaseRunContext,
+        clock: SimulatedClock,
+        execution: ExecutionResult,
+        diagnosis: DiagnosisResult | None,
+    ):
+        """Create PTP, advance clock to due date, observe payment, feed outcome."""
+        remaining = ctx.remaining_balance if ctx.remaining_balance is not None else ctx.case.amount
+
+        if execution.event == "promise_created":
+            window_end = ctx.case.recovery_window_end
+            if window_end.tzinfo is None:
+                from datetime import timezone as _tz
+
+                window_end = window_end.replace(tzinfo=_tz.utc)
+            days_left = max(1, (window_end - clock.now).days)
+            promise_days = min(7, max(1, days_left - 1))
+            promise_date = default_promise_date(clock.now, days=promise_days)
+            validation = validate_promise(
+                promised_amount=remaining,
+                promise_date=promise_date,
+                remaining_balance=remaining,
+                recovery_window_end=ctx.case.recovery_window_end,
+                now=clock.now,
+            )
+            if not validation.allowed:
+                self._audit(
+                    conn,
+                    ctx,
+                    clock,
+                    "PROMISE_REJECTED",
+                    "promise_to_pay_request",
+                    "promise_validator",
+                    validation.reason,
+                    {
+                        "promised_amount": remaining,
+                        "promise_date": promise_date.isoformat(),
+                        "remaining_balance": remaining,
+                    },
+                )
+                return (
+                    ExecutionResult(
+                        action=execution.action,
+                        success=False,
+                        event="customer_ignored",
+                        detail=f"Promise rejected: {validation.reason}",
+                    ),
+                    process_outcome(
+                        ctx,
+                        ExecutionResult(
+                            action=execution.action,
+                            success=False,
+                            event="customer_ignored",
+                            detail=f"Promise rejected: {validation.reason}",
+                        ),
+                    ),
+                )
+
+            invoice = load_invoice_by_case(conn, ctx.case.case_id)
+            due_date = invoice.due_date if invoice is not None else ctx.case.created_at
+            promise = create_promise(
+                conn,
+                case_id=ctx.case.case_id,
+                customer_id=ctx.case.customer_id,
+                promised_amount=remaining,
+                promise_date=promise_date,
+                due_date=due_date,
+                created_at=clock.now,
+            )
+            ctx.active_promise_id = promise.promise_id
+            self._audit(
+                conn,
+                ctx,
+                clock,
+                "PROMISE_CREATED",
+                "promise_to_pay_request",
+                "promise_engine",
+                "Promise-to-pay recorded.",
+                {
+                    "promise_id": promise.promise_id,
+                    "promised_amount": promise.promised_amount,
+                    "promise_date": promise.promise_date.isoformat(),
+                    "remaining_balance": remaining,
+                },
+            )
+            # Move to promised before waiting for due date.
+            if can_transition(ctx, "promise_made"):
+                self._apply_and_audit(
+                    conn, ctx, clock, "promise_made", "outcome_engine", "Customer promised payment."
+                )
+
+            return self._observe_active_promise(conn, ctx, clock, diagnosis)
+
+        # track_promise_to_pay / promise_due_check
+        return self._observe_active_promise(conn, ctx, clock, diagnosis)
+
+    def _observe_active_promise(
+        self,
+        conn: sqlite3.Connection,
+        ctx: CaseRunContext,
+        clock: SimulatedClock,
+        diagnosis: DiagnosisResult | None,
+    ):
+        active = load_active_promise_by_case(conn, ctx.case.case_id)
+        if active is None and ctx.active_promise_id:
+            # Just created in same transaction path — reload
+            active = load_active_promise_by_case(conn, ctx.case.case_id)
+        if active is None:
+            return (
+                ExecutionResult(
+                    action="track_promise_to_pay",
+                    success=False,
+                    event="customer_ignored",
+                    detail="No active promise to observe.",
+                ),
+                process_outcome(
+                    ctx,
+                    ExecutionResult(
+                        action="track_promise_to_pay",
+                        success=False,
+                        event="customer_ignored",
+                        detail="No active promise to observe.",
+                    ),
+                ),
+            )
+
+        promise_date = active.promise_date
+        if promise_date.tzinfo is None:
+            from datetime import timezone
+
+            promise_date = promise_date.replace(tzinfo=timezone.utc)
+        if clock.now < promise_date:
+            hours = max(1, int((promise_date - clock.now).total_seconds() / 3600) + 1)
+            clock.advance_hours(hours)
+            self._audit(
+                conn,
+                ctx,
+                clock,
+                "SIM_TIME_ADVANCED",
+                None,
+                "sim_clock",
+                f"Advanced to promise date ({promise_date.isoformat()}).",
+                {"simulated_now": clock.now.isoformat(), "reason": "promise_due"},
+            )
+
+        self._audit(
+            conn,
+            ctx,
+            clock,
+            "PROMISE_DUE",
+            "track_promise_to_pay",
+            "promise_engine",
+            "Promise date reached; observing payment.",
+            {
+                "promise_id": active.promise_id,
+                "promised_amount": active.promised_amount,
+                "remaining_balance": ctx.remaining_balance,
+            },
+        )
+
+        remaining = ctx.remaining_balance if ctx.remaining_balance is not None else ctx.case.amount
+        paid = _simulated_promise_payment(ctx, diagnosis, remaining, active.promised_amount)
+        observation = observe_promise_payment(
+            promised_amount=float(active.promised_amount),
+            remaining_balance=remaining,
+            paid_amount=paid,
+        )
+
+        if observation.outcome == "kept":
+            update_promise_status(conn, active.promise_id, "kept")
+            ctx.active_promise_id = None
+            ctx.amount_paid = round(ctx.amount_paid + observation.amount_paid, 2)
+            ctx.amount_recovered = round(ctx.amount_recovered + observation.amount_paid, 2)
+            ctx.remaining_balance = 0.0
+            execution = ExecutionResult(
+                action="observe_payment",
+                success=True,
+                event="promise_kept",
+                detail=observation.detail,
+            )
+            self._audit(
+                conn,
+                ctx,
+                clock,
+                "PROMISE_KEPT",
+                "observe_payment",
+                "promise_engine",
+                observation.detail,
+                {
+                    "promise_id": active.promise_id,
+                    "amount_paid": observation.amount_paid,
+                    "remaining_balance": 0.0,
+                },
+            )
+            return execution, process_outcome(ctx, execution)
+
+        if observation.outcome == "partial":
+            update_promise_status(conn, active.promise_id, "missed")
+            ctx.active_promise_id = None
+            ctx.promise_broken_before = True
+            ctx.amount_paid = round(ctx.amount_paid + observation.amount_paid, 2)
+            ctx.remaining_balance = observation.remaining_balance
+            ctx.amount_recovered = round(ctx.amount_recovered + observation.amount_paid, 2)
+            execution = ExecutionResult(
+                action="observe_payment",
+                success=False,
+                event="partial_payment_received",
+                detail=observation.detail,
+            )
+            self._audit(
+                conn,
+                ctx,
+                clock,
+                "PARTIAL_PAYMENT_RECEIVED",
+                "observe_payment",
+                "promise_engine",
+                observation.detail,
+                {
+                    "promise_id": active.promise_id,
+                    "amount_paid": observation.amount_paid,
+                    "remaining_balance": observation.remaining_balance,
+                },
+            )
+            self._audit(
+                conn,
+                ctx,
+                clock,
+                "PROMISE_BROKEN",
+                "observe_payment",
+                "promise_engine",
+                "Promise only partially fulfilled; re-planning for remaining balance.",
+                {"promise_id": active.promise_id, "remaining_balance": observation.remaining_balance},
+            )
+            return execution, process_outcome(ctx, execution)
+
+        update_promise_status(conn, active.promise_id, "missed")
+        ctx.active_promise_id = None
+        ctx.promise_broken_before = True
+        execution = ExecutionResult(
+            action="observe_payment",
+            success=False,
+            event="promise_broken",
+            detail=observation.detail,
+        )
+        self._audit(
+            conn,
+            ctx,
+            clock,
+            "PROMISE_BROKEN",
+            "observe_payment",
+            "promise_engine",
+            observation.detail,
+            {
+                "promise_id": active.promise_id,
+                "amount_paid": observation.amount_paid,
+                "remaining_balance": observation.remaining_balance,
+            },
+        )
+        return execution, process_outcome(ctx, execution)
+
     def _apply_and_audit(
         self,
         conn: sqlite3.Connection,
@@ -536,6 +832,26 @@ def _empty_diagnosis() -> DiagnosisResult:
     return DiagnosisResult(likely_cause="unknown_failure", confidence=0.0, rationale="")
 
 
+def _simulated_promise_payment(
+    ctx: CaseRunContext,
+    diagnosis: DiagnosisResult | None,
+    remaining: float,
+    promised_amount: float,
+) -> float:
+    """Deterministic payment amount at promise due — never uses evaluator ground truth."""
+    if ctx.simulated_payment_amount is not None:
+        return max(0.0, float(ctx.simulated_payment_amount))
+    cause = diagnosis.likely_cause if diagnosis is not None else ""
+    if cause in {"low_responsiveness", "invoice_dispute"} or ctx.promise_broken_before:
+        # First broken-promise observation pays nothing; subsequent replans use other actions.
+        if ctx.last_action in {"promise_to_pay_request", "track_promise_to_pay", "payment_assistance"}:
+            return 0.0
+    if cause == "temporary_cash_constraint" and ctx.attempt_count <= 1:
+        # Allow demos to force partial via simulated_payment_amount; default full.
+        pass
+    return min(remaining, promised_amount)
+
+
 def _diagnosis_from_proposal(proposal: DecisionProposal) -> DiagnosisResult:
     reasoning = proposal.reasoning
     return DiagnosisResult(
@@ -556,6 +872,14 @@ def _outcome_event_type(outcome) -> str:
         return "DEFERRED"
     if outcome.trigger == "payment_method_updated":
         return "PAYMENT_METHOD_UPDATE"
-    if outcome.trigger is None and "Checkout" in (outcome.summary or ""):
+    if outcome.trigger == "promise_broken":
+        return "PROMISE_BROKEN"
+    if outcome.trigger == "partial_payment":
+        return "PARTIAL_PAYMENT_RECEIVED"
+    if outcome.trigger == "promise_made":
+        return "PROMISE_CREATED"
+    if outcome.trigger is None and (
+        "Checkout" in (outcome.summary or "") or "Receivable" in (outcome.summary or "")
+    ):
         return "CUSTOMER_IGNORED"
     return "PAYMENT_FAILED"

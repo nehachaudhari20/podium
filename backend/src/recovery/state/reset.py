@@ -27,4 +27,5 @@ def reset_case_for_run(conn: sqlite3.Connection, case_id: str) -> None:
     )
     conn.execute("DELETE FROM audit_events WHERE case_id = ?", (case_id,))
     conn.execute("DELETE FROM recovery_action_log WHERE case_id = ?", (case_id,))
+    conn.execute("DELETE FROM promises_to_pay WHERE case_id = ?", (case_id,))
     conn.commit()

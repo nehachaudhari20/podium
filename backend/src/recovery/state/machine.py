@@ -1,4 +1,4 @@
-"""Explicit subscription-payment recovery state machine."""
+"""Explicit recovery state machine (subscription / checkout / receivable)."""
 
 from __future__ import annotations
 
@@ -18,11 +18,39 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
         WorkflowState.WAITING.value,
     ),
     "contact_sent": (
-        frozenset({WorkflowState.DIAGNOSED.value, WorkflowState.WAITING.value}),
+        frozenset(
+            {
+                WorkflowState.DIAGNOSED.value,
+                WorkflowState.WAITING.value,
+                WorkflowState.PROMISED.value,
+            }
+        ),
         WorkflowState.CONTACTED.value,
     ),
     "payment_method_updated": (
         frozenset({WorkflowState.CONTACTED.value, WorkflowState.WAITING.value}),
+        WorkflowState.WAITING.value,
+    ),
+    "promise_made": (
+        frozenset(
+            {
+                WorkflowState.CONTACTED.value,
+                WorkflowState.WAITING.value,
+                WorkflowState.DIAGNOSED.value,
+            }
+        ),
+        WorkflowState.PROMISED.value,
+    ),
+    "promise_kept": (
+        frozenset({WorkflowState.PROMISED.value}),
+        WorkflowState.RECOVERED.value,
+    ),
+    "promise_broken": (
+        frozenset({WorkflowState.PROMISED.value}),
+        WorkflowState.WAITING.value,
+    ),
+    "partial_payment": (
+        frozenset({WorkflowState.PROMISED.value, WorkflowState.CONTACTED.value}),
         WorkflowState.WAITING.value,
     ),
     "payment_succeeds": (
@@ -31,6 +59,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.WAITING.value,
                 WorkflowState.RETRY_SCHEDULED.value,
                 WorkflowState.CONTACTED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.RECOVERED.value,
@@ -52,6 +81,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.RETRY_SCHEDULED.value,
                 WorkflowState.CONTACTED.value,
                 WorkflowState.DIAGNOSED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.EXHAUSTED.value,
@@ -62,6 +92,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.WAITING.value,
                 WorkflowState.CONTACTED.value,
                 WorkflowState.DIAGNOSED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.ESCALATED.value,
@@ -73,6 +104,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.DIAGNOSED.value,
                 WorkflowState.WAITING.value,
                 WorkflowState.CONTACTED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.EXHAUSTED.value,
@@ -83,6 +115,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.DIAGNOSED.value,
                 WorkflowState.WAITING.value,
                 WorkflowState.CONTACTED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.DEFERRED.value,
@@ -94,6 +127,7 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
                 WorkflowState.DIAGNOSED.value,
                 WorkflowState.WAITING.value,
                 WorkflowState.CONTACTED.value,
+                WorkflowState.PROMISED.value,
             }
         ),
         WorkflowState.EXHAUSTED.value,
@@ -134,6 +168,8 @@ def apply_transition(ctx: CaseRunContext, trigger: str) -> str:
 def action_to_initial_trigger(action: RecoveryAction) -> str:
     if action.is_retry:
         return "retry_scheduled"
+    if action.action_id == "track_promise_to_pay":
+        return "promise_made"
     if action.is_contact or action.action_id in {"limited_incentive", "offer_discount"}:
         return "contact_sent"
     if action.action_id == "stop_recovery":

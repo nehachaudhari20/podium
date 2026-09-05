@@ -151,6 +151,34 @@ def build_coordinated_plan(
     for conflict in conflicts:
         plan.coordination_reasons.append(f"{conflict.conflict_type}: {conflict.detail}")
 
+    # Active promise: defer aggressive contact on the same invoice (Phase 7).
+    if view.has_active_promise:
+        promise_cases = set(view.active_promise_case_ids)
+        kept_promise: list[ProposedIntervention] = []
+        for proposal in remaining:
+            if (
+                proposal.case_id in promise_cases
+                and is_contact_action(proposal.action)
+                and proposal.action.action_id
+                not in {"track_promise_to_pay", "promise_confirmation"}
+            ):
+                plan.deferred_actions.append(
+                    PlannedAction(
+                        case_id=proposal.case_id,
+                        lane=proposal.lane,
+                        action_id=proposal.action.action_id,
+                        expected_net_value=proposal.expected_net_value,
+                        decision="deferred",
+                        reason="active_promise_commitment",
+                    )
+                )
+                plan.coordination_reasons.append(
+                    f"{proposal.case_id}: deferred contact — active promise-to-pay"
+                )
+            else:
+                kept_promise.append(proposal)
+        remaining = kept_promise
+
     # Recovery fatigue: defer contacts when recent contacts exist (system actions still OK)
     if view.recent_contacts_7d > 0 and cfg.max_customer_contacts_per_window <= 1:
         kept: list[ProposedIntervention] = []

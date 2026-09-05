@@ -112,3 +112,45 @@ actions:
     base_cost: 0
     capacity_unit: none
     requires_human: false
+
+  - id: invoice_reminder
+    label: Invoice reminder
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: statement_resend
+    label: Resend statement
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: payment_assistance
+    label: Payment assistance
+    channel: email
+    base_cost: 5
+    capacity_unit: contact
+    requires_human: false
+
+  - id: promise_to_pay_request
+    label: Request promise-to-pay
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: promise_confirmation
+    label: Confirm promise-to-pay
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: escalate_collections
+    label: Escalate to collections
+    channel: human
+    base_cost: 750
+    capacity_unit: human_hour
+    requires_human: true

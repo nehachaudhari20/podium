@@ -41,6 +41,8 @@ class CustomerRecoveryView:
     recent_contacts_7d: int
     highest_value_case_id: str | None
     open_case_count: int
+    has_active_promise: bool = False
+    active_promise_case_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +55,8 @@ class CustomerRecoveryView:
             "recent_contacts_7d": self.recent_contacts_7d,
             "highest_value_case_id": self.highest_value_case_id,
             "open_case_count": self.open_case_count,
+            "has_active_promise": self.has_active_promise,
+            "active_promise_case_ids": list(self.active_promise_case_ids),
         }
 
     def cases_by_lane(self, lane: str) -> tuple[ActiveCaseSummary, ...]:
@@ -109,6 +113,15 @@ def load_customer_recovery_view(
     lanes = tuple(sorted({c.lane for c in cases}))
     highest = cases[0].case_id if cases else None
 
+    promise_rows = conn.execute(
+        """
+        SELECT DISTINCT case_id FROM promises_to_pay
+        WHERE customer_id = ? AND status = 'active'
+        """,
+        (customer_id,),
+    ).fetchall()
+    promise_case_ids = tuple(row["case_id"] for row in promise_rows)
+
     return CustomerRecoveryView(
         customer_id=customer_id,
         segment=customer.segment,
@@ -119,4 +132,6 @@ def load_customer_recovery_view(
         recent_contacts_7d=customer.prior_contacts_7d,
         highest_value_case_id=highest,
         open_case_count=len(cases),
+        has_active_promise=bool(promise_case_ids),
+        active_promise_case_ids=promise_case_ids,
     )

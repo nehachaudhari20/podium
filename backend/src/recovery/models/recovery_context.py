@@ -81,6 +81,31 @@ class CheckoutSessionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class InvoiceFacts:
+    """Invoice facts visible to receivable intelligence (runtime-safe)."""
+
+    invoice_id: str
+    amount: float
+    currency: str
+    due_date: str
+    days_overdue: int
+    status: str
+    invoice_type: str
+    remaining_balance: float
+
+
+@dataclass(frozen=True, slots=True)
+class PromiseFacts:
+    """Active or recent promise-to-pay facts (runtime-safe)."""
+
+    promise_id: str
+    promised_amount: float
+    promise_date: str
+    status: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class SiblingCaseFacts:
     """Another open case for the same customer (cross-revenue context)."""
 
@@ -131,6 +156,14 @@ class DerivedSignals:
     # Cross-revenue signals (Phase 6)
     multi_lane_active: bool = False
     has_sibling_open_cases: bool = False
+    # Receivable / PTP signals (Phase 7)
+    active_promise: bool = False
+    promise_broken_before: bool = False
+    mildly_overdue: bool = False
+    aged_overdue: bool = False
+    severely_overdue: bool = False
+    high_value_invoice: bool = False
+    partial_payment_received: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +177,9 @@ class RecoveryContext:
     built_at: str
     checkout: CheckoutSessionFacts | None = None
     cross_revenue: CrossRevenueFacts | None = None
-    schema_version: str = "6a.1"
+    invoice: InvoiceFacts | None = None
+    promise: PromiseFacts | None = None
+    schema_version: str = "7a.1"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -26,6 +26,8 @@ def probability_for_action(
     elif action.action_id == "human_escalation":
         # No artificial probability inflation — cost must justify selection via net value.
         prob = min(0.95, base)
+    elif action.action_id == "escalate_collections":
+        prob = min(0.92, base)
     elif action.action_id == "voice_call":
         prob = min(0.90, base + 0.05)
     elif action.action_id in {"limited_incentive", "offer_discount"}:
@@ -36,6 +38,13 @@ def probability_for_action(
             prob = (base + predictive.responsiveness_score) / 2.0
         else:
             prob = base * 0.55
+    elif action.action_id == "track_promise_to_pay":
+        prob = min(0.85, base + 0.05)
+    elif action.action_id == "promise_to_pay_request":
+        # Structured commitment — competitive with human on probability; cost decides.
+        prob = min(0.90, base + 0.08)
+    elif action.action_id == "invoice_reminder":
+        prob = (base + predictive.responsiveness_score) / 2.0
     elif action.is_contact:
         prob = (base + predictive.responsiveness_score) / 2.0
     else:
@@ -44,7 +53,7 @@ def probability_for_action(
     # Discourage immediately repeating a failed intervention (supports re-plan diversity).
     if last_action and action.action_id == last_action:
         prob *= 0.35
-    elif last_action and action.action_id == "checkout_reminder":
+    elif last_action and action.action_id in {"checkout_reminder", "invoice_reminder"}:
         # After any prior outreach, a plain reminder is less valuable than a new tactic.
         prob *= 0.55
 

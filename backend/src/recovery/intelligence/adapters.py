@@ -55,6 +55,15 @@ def context_key_factors(context: RecoveryContext) -> tuple[str, ...]:
         "repeat_abandoner": signals.repeat_abandoner,
         "prior_successful_customer": signals.prior_successful_customer,
         "recovery_attempted_before": signals.recovery_attempted_before,
+        "multi_lane_active": signals.multi_lane_active,
+        "has_sibling_open_cases": signals.has_sibling_open_cases,
+        "active_promise": signals.active_promise,
+        "promise_broken_before": signals.promise_broken_before,
+        "mildly_overdue": signals.mildly_overdue,
+        "aged_overdue": signals.aged_overdue,
+        "severely_overdue": signals.severely_overdue,
+        "high_value_invoice": signals.high_value_invoice,
+        "partial_payment_received": signals.partial_payment_received,
     }
     for name, active in mapping.items():
         if active:

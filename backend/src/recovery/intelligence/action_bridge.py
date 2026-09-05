@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from recovery.intelligence.checkout_strategy import CHECKOUT_CAUSE_ACTIONS
+from recovery.intelligence.receivable_strategy import RECEIVABLE_CAUSE_ACTIONS
 from recovery.intelligence.strategy import CAUSE_ACTIONS, runtime_pool_for_cause
 from recovery.models.recovery_types import RecoveryAction
 
@@ -17,6 +18,10 @@ _CONTACT_CATALOG = frozenset(
         "checkout_reminder",
         "payment_link",
         "checkout_assistance",
+        "invoice_reminder",
+        "promise_to_pay_request",
+        "statement_resend",
+        "payment_assistance",
     }
 )
 _CHECKOUT_DIRECT = frozenset(
@@ -30,10 +35,53 @@ _CHECKOUT_DIRECT = frozenset(
         "offer_discount",
     }
 )
+_RECEIVABLE_DIRECT = frozenset(
+    {
+        "invoice_reminder",
+        "payment_link",
+        "statement_resend",
+        "payment_assistance",
+        "promise_to_pay_request",
+        "promise_confirmation",
+        "track_promise_to_pay",
+        "human_escalation",
+        "escalate_collections",
+        "stop_recovery",
+    }
+)
 
 
 def catalog_to_runtime(catalog_action_id: str, likely_cause: str) -> RecoveryAction | None:
     """Translate an actions.yaml catalog id into a simulator-ready RecoveryAction."""
+    if catalog_action_id in _RECEIVABLE_DIRECT or likely_cause in RECEIVABLE_CAUSE_ACTIONS:
+        pool = runtime_pool_for_cause(likely_cause, lane="receivable")
+        for action in pool:
+            if action.action_id == catalog_action_id:
+                return action
+        receivable_defs = {
+            "invoice_reminder": RecoveryAction(
+                "invoice_reminder", "Send invoice reminder", "email", is_contact=True
+            ),
+            "payment_link": RecoveryAction(
+                "payment_link", "Send payment link", "email", is_contact=True
+            ),
+            "promise_to_pay_request": RecoveryAction(
+                "promise_to_pay_request", "Request promise-to-pay", "email", is_contact=True
+            ),
+            "track_promise_to_pay": RecoveryAction(
+                "track_promise_to_pay", "Track active promise-to-pay", "system"
+            ),
+            "human_escalation": RecoveryAction(
+                "human_escalation", "Human follow-up", "human", is_contact=True
+            ),
+            "escalate_collections": RecoveryAction(
+                "escalate_collections", "Escalate to collections", "human", is_contact=True
+            ),
+            "stop_recovery": RecoveryAction("stop_recovery", "Stop recovery", "system"),
+        }
+        if catalog_action_id in receivable_defs and likely_cause in RECEIVABLE_CAUSE_ACTIONS:
+            return receivable_defs[catalog_action_id]
+
     # Direct checkout catalog ids map 1:1 when present in checkout pools.
     if catalog_action_id in _CHECKOUT_DIRECT or likely_cause in CHECKOUT_CAUSE_ACTIONS:
         pool = runtime_pool_for_cause(likely_cause)
