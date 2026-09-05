@@ -55,10 +55,34 @@ def test_diagnose_transient_failures():
         assert result.likely_cause == "transient_failure"
 
 
-def test_diagnose_rejects_non_subscription_lane():
-    case = _subscription_case("insufficient_funds", lane=Lane.CHECKOUT_ABANDONMENT.value)
-    with pytest.raises(ValueError, match="subscription_payment"):
+def test_diagnose_rejects_unsupported_lane():
+    case = _subscription_case("insufficient_funds", lane=Lane.RECEIVABLE.value)
+    with pytest.raises(ValueError, match="subscription_payment and checkout_abandonment"):
         diagnose(case)
+
+
+def test_diagnose_checkout_payment_page_drop():
+    case = _subscription_case(
+        "checkout_payment_page_drop",
+        lane=Lane.CHECKOUT_ABANDONMENT.value,
+        source_ref_id="chk_test_001",
+    )
+    result = diagnose(case)
+    assert result.likely_cause == "payment_friction"
+
+
+def test_generate_checkout_actions_high_intent():
+    case = _subscription_case(
+        "checkout_high_intent_drop",
+        lane=Lane.CHECKOUT_ABANDONMENT.value,
+        source_ref_id="chk_test_002",
+    )
+    diagnosis = diagnose(case)
+    actions = generate_actions(case, diagnosis)
+    ids = [a.action_id for a in actions]
+    assert "checkout_reminder" in ids or "payment_link" in ids
+    assert "limited_incentive" not in ids
+
 
 
 def test_generate_actions_insufficient_funds():

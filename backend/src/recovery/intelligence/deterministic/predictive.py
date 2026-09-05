@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from recovery.intelligence.contracts import PredictiveIntelligence, PredictiveSignals
+from recovery.models.enums import Lane
 from recovery.models.recovery_context import RecoveryContext
 
 
@@ -10,6 +11,11 @@ class DeterministicPredictiveIntelligence:
     """Rule-based recovery likelihood scores — not ML, not LLM."""
 
     def score(self, context: RecoveryContext) -> PredictiveSignals:
+        if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
+            return self._score_checkout(context)
+        return self._score_subscription(context)
+
+    def _score_subscription(self, context: RecoveryContext) -> PredictiveSignals:
         signals = context.derived_signals
         case = context.case
 
@@ -51,6 +57,48 @@ class DeterministicPredictiveIntelligence:
             source="deterministic",
         )
 
+    def _score_checkout(self, context: RecoveryContext) -> PredictiveSignals:
+        signals = context.derived_signals
+        checkout = context.checkout
 
-# Protocol satisfaction
+        recovery_prob = 0.40
+        retry_likelihood = 0.35
+        responsiveness = 0.48
+
+        if signals.high_intent and signals.recent_abandonment:
+            recovery_prob = 0.72
+            responsiveness = 0.70
+        elif signals.high_intent and signals.payment_stage_abandonment:
+            recovery_prob = 0.68
+            responsiveness = 0.65
+        elif signals.early_stage_abandonment and not signals.high_intent:
+            recovery_prob = 0.28
+            responsiveness = 0.35
+        elif checkout is not None and checkout.intent_score is not None and checkout.intent_score < 0.45:
+            recovery_prob = 0.22
+            responsiveness = 0.30
+
+        if signals.prior_successful_customer:
+            recovery_prob = min(0.92, recovery_prob + 0.10)
+            responsiveness = min(1.0, responsiveness + 0.12)
+
+        if signals.customer_non_response:
+            responsiveness = max(0.05, responsiveness - 0.22)
+            recovery_prob = max(0.08, recovery_prob - 0.10)
+
+        if signals.customer_opt_out:
+            responsiveness = 0.0
+            recovery_prob = max(0.05, recovery_prob - 0.20)
+
+        if signals.recovery_attempted_before:
+            recovery_prob = max(0.10, recovery_prob - 0.08)
+
+        return PredictiveSignals(
+            estimated_recovery_probability=round(recovery_prob, 4),
+            retry_success_likelihood=round(retry_likelihood, 4),
+            responsiveness_score=round(min(1.0, responsiveness), 4),
+            source="deterministic",
+        )
+
+
 _: PredictiveIntelligence = DeterministicPredictiveIntelligence()

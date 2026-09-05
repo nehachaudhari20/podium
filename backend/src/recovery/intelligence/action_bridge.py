@@ -1,8 +1,9 @@
-"""Map LLM catalog action IDs to Phase 2 executable RecoveryAction objects."""
+"""Map LLM catalog action IDs to executable RecoveryAction objects."""
 
 from __future__ import annotations
 
-from recovery.intelligence.strategy import CAUSE_ACTIONS
+from recovery.intelligence.checkout_strategy import CHECKOUT_CAUSE_ACTIONS
+from recovery.intelligence.strategy import CAUSE_ACTIONS, runtime_pool_for_cause
 from recovery.models.recovery_types import RecoveryAction
 
 _RETRY_CATALOG = frozenset({"retry_payment", "wait_and_retry"})
@@ -13,17 +14,57 @@ _CONTACT_CATALOG = frozenset(
         "send_sms",
         "voice_call",
         "request_payment_method_update",
+        "checkout_reminder",
+        "payment_link",
+        "checkout_assistance",
+    }
+)
+_CHECKOUT_DIRECT = frozenset(
+    {
+        "checkout_reminder",
+        "payment_link",
+        "checkout_assistance",
+        "limited_incentive",
+        "stop_recovery",
+        "human_escalation",
+        "offer_discount",
     }
 )
 
 
-def runtime_pool_for_cause(likely_cause: str) -> list[RecoveryAction]:
-    return list(CAUSE_ACTIONS.get(likely_cause, CAUSE_ACTIONS["unknown_failure"]))
-
-
 def catalog_to_runtime(catalog_action_id: str, likely_cause: str) -> RecoveryAction | None:
     """Translate an actions.yaml catalog id into a simulator-ready RecoveryAction."""
-    pool = runtime_pool_for_cause(likely_cause)
+    # Direct checkout catalog ids map 1:1 when present in checkout pools.
+    if catalog_action_id in _CHECKOUT_DIRECT or likely_cause in CHECKOUT_CAUSE_ACTIONS:
+        pool = runtime_pool_for_cause(likely_cause)
+        if catalog_action_id == "offer_discount":
+            catalog_action_id = "limited_incentive"
+        for action in pool:
+            if action.action_id == catalog_action_id:
+                return action
+        # Fallback: construct from known checkout action definitions.
+        checkout_defs = {
+            "checkout_reminder": RecoveryAction(
+                "checkout_reminder", "Send checkout reminder", "email", is_contact=True
+            ),
+            "payment_link": RecoveryAction(
+                "payment_link", "Send payment completion link", "email", is_contact=True
+            ),
+            "checkout_assistance": RecoveryAction(
+                "checkout_assistance", "Offer checkout assistance", "email", is_contact=True
+            ),
+            "limited_incentive": RecoveryAction(
+                "limited_incentive", "Offer limited checkout incentive", "system"
+            ),
+            "stop_recovery": RecoveryAction("stop_recovery", "Stop checkout recovery", "system"),
+            "human_escalation": RecoveryAction(
+                "human_escalation", "Escalate to human agent", "human", is_contact=True
+            ),
+        }
+        if catalog_action_id in checkout_defs and likely_cause in CHECKOUT_CAUSE_ACTIONS:
+            return checkout_defs[catalog_action_id]
+
+    pool = list(CAUSE_ACTIONS.get(likely_cause, CAUSE_ACTIONS["unknown_failure"]))
 
     if catalog_action_id in _RETRY_CATALOG:
         retries = [action for action in pool if action.is_retry]

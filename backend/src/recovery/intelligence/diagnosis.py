@@ -1,13 +1,15 @@
-"""Rule-based diagnosis — Phase 2 deterministic implementation.
+"""Rule-based diagnosis — subscription (Phase 2) + checkout (Phase 4B).
 
-Phase 3 will replace ``diagnose`` with a Gemini-backed implementation
-using the same ``DiagnosisResult`` interface.
+Lane-aware dispatcher over DiagnosisResult. LLM proposals must still validate
+against VALID_CAUSES.
 """
 
 from __future__ import annotations
 
+from recovery.intelligence.checkout_diagnosis import CHECKOUT_CAUSES, diagnose_checkout
 from recovery.models.case import RecoveryCaseRuntime
 from recovery.models.enums import Lane
+from recovery.models.recovery_context import RecoveryContext
 from recovery.models.recovery_types import DiagnosisResult
 
 FAILURE_TO_CAUSE: dict[str, tuple[str, float, str]] = {
@@ -60,14 +62,22 @@ FAILURE_TO_CAUSE: dict[str, tuple[str, float, str]] = {
 
 
 VALID_CAUSES = frozenset(
-    {entry[0] for entry in FAILURE_TO_CAUSE.values()} | {"unknown_failure"}
+    {entry[0] for entry in FAILURE_TO_CAUSE.values()} | {"unknown_failure"} | CHECKOUT_CAUSES
 )
 
 
-def diagnose(case: RecoveryCaseRuntime) -> DiagnosisResult:
+def diagnose(
+    case: RecoveryCaseRuntime,
+    context: RecoveryContext | None = None,
+) -> DiagnosisResult:
     """Return a structured diagnosis for a recovery case."""
+    if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
+        return diagnose_checkout(case, context)
+
     if case.lane != Lane.SUBSCRIPTION_PAYMENT.value:
-        raise ValueError(f"Phase 2 diagnosis supports subscription_payment only, got {case.lane}")
+        raise ValueError(
+            f"Diagnosis supports subscription_payment and checkout_abandonment only, got {case.lane}"
+        )
 
     reason = case.failure_reason or "unknown"
     if reason in FAILURE_TO_CAUSE:

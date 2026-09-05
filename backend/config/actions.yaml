@@ -77,3 +77,38 @@ actions:
     base_cost: 0
     capacity_unit: none
     requires_human: false
+
+  - id: checkout_reminder
+    label: Checkout reminder
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: payment_link
+    label: Payment completion link
+    channel: email
+    base_cost: 2
+    capacity_unit: contact
+    requires_human: false
+
+  - id: checkout_assistance
+    label: Checkout assistance
+    channel: email
+    base_cost: 5
+    capacity_unit: contact
+    requires_human: false
+
+  - id: limited_incentive
+    label: Limited checkout incentive
+    channel: system
+    base_cost: 0
+    capacity_unit: discount
+    requires_human: false
+
+  - id: stop_recovery
+    label: Stop recovery
+    channel: system
+    base_cost: 0
+    capacity_unit: none
+    requires_human: false

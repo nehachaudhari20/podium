@@ -1,12 +1,11 @@
-"""Rule-based recovery strategy — Phase 2 deterministic implementation.
-
-Phase 3 will replace ``generate_actions`` with Gemini-backed candidate generation
-using the same ``RecoveryAction`` interface.
-"""
+"""Rule-based recovery strategy — subscription (Phase 2) + checkout (Phase 4B)."""
 
 from __future__ import annotations
 
+from recovery.intelligence.checkout_strategy import CHECKOUT_CAUSE_ACTIONS, generate_checkout_actions
 from recovery.models.case import RecoveryCaseRuntime
+from recovery.models.enums import Lane
+from recovery.models.recovery_context import RecoveryContext
 from recovery.models.recovery_types import DiagnosisResult, RecoveryAction
 
 CAUSE_ACTIONS: dict[str, list[RecoveryAction]] = {
@@ -82,7 +81,20 @@ CAUSE_ACTIONS: dict[str, list[RecoveryAction]] = {
 def generate_actions(
     case: RecoveryCaseRuntime,
     diagnosis: DiagnosisResult,
+    context: RecoveryContext | None = None,
 ) -> list[RecoveryAction]:
     """Return ordered candidate recovery actions for a diagnosed case."""
+    if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
+        return generate_checkout_actions(case, diagnosis, context)
+
     actions = CAUSE_ACTIONS.get(diagnosis.likely_cause, CAUSE_ACTIONS["unknown_failure"])
     return list(actions)
+
+
+def runtime_pool_for_cause(likely_cause: str, *, lane: str | None = None) -> list[RecoveryAction]:
+    """Union lookup for action bridging across lanes."""
+    if lane == Lane.CHECKOUT_ABANDONMENT.value or likely_cause in CHECKOUT_CAUSE_ACTIONS:
+        return list(
+            CHECKOUT_CAUSE_ACTIONS.get(likely_cause, CHECKOUT_CAUSE_ACTIONS["unknown_abandonment"])
+        )
+    return list(CAUSE_ACTIONS.get(likely_cause, CAUSE_ACTIONS["unknown_failure"]))

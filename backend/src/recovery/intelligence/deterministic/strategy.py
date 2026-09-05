@@ -9,14 +9,14 @@ from recovery.intelligence.contracts import (
     StrategyIntelligence,
     StrategyProposal,
 )
-from recovery.intelligence.diagnosis import DiagnosisResult
 from recovery.intelligence.strategy import generate_actions
+from recovery.models.enums import Lane
 from recovery.models.recovery_context import RecoveryContext
-from recovery.models.recovery_types import RecoveryAction
+from recovery.models.recovery_types import DiagnosisResult, RecoveryAction
 
 
 class DeterministicStrategyIntelligence:
-    """Generates ranked strategy proposals using Phase 2 action catalog."""
+    """Generates ranked strategy proposals using lane-aware action catalogs."""
 
     def propose_strategies(
         self,
@@ -30,7 +30,7 @@ class DeterministicStrategyIntelligence:
             confidence=reasoning.confidence,
             rationale=reasoning.summary,
         )
-        actions = generate_actions(runtime_case, diagnosis)
+        actions = generate_actions(runtime_case, diagnosis, context)
         actions = self._filter_actions(context, actions)
         actions = self._reorder_actions(context, actions)
 
@@ -58,6 +58,10 @@ class DeterministicStrategyIntelligence:
             filtered = [a for a in filtered if a.action_id != "payment_method_update"]
         if context.derived_signals.customer_opt_out:
             filtered = [a for a in filtered if not a.is_contact]
+            if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value and not filtered:
+                filtered = [
+                    RecoveryAction("stop_recovery", "Stop checkout recovery", "system")
+                ]
         return filtered
 
     def _reorder_actions(
@@ -65,6 +69,9 @@ class DeterministicStrategyIntelligence:
         context: RecoveryContext,
         actions: list[RecoveryAction],
     ) -> list[RecoveryAction]:
+        if context.case.lane == Lane.CHECKOUT_ABANDONMENT.value:
+            return self._reorder_checkout(context, actions)
+
         if not context.derived_signals.repeated_failure:
             return actions
 
@@ -76,6 +83,19 @@ class DeterministicStrategyIntelligence:
         if context.derived_signals.retry_exhaustion_risk:
             return escalations + contacts + retries + others
         return contacts + retries + escalations + others
+
+    def _reorder_checkout(
+        self,
+        context: RecoveryContext,
+        actions: list[RecoveryAction],
+    ) -> list[RecoveryAction]:
+        last = context.case.last_action
+        if not last:
+            return actions
+        # Push previously executed action later to encourage re-planning diversity.
+        preferred = [a for a in actions if a.action_id != last]
+        repeated = [a for a in actions if a.action_id == last]
+        return preferred + repeated
 
     def _action_confidence(
         self,
@@ -90,15 +110,34 @@ class DeterministicStrategyIntelligence:
             base = (base + predictive.responsiveness_score) / 2
         if action.action_id == "human_escalation" and context.derived_signals.repeated_failure:
             base = min(0.85, base + 0.20)
+        if action.action_id == "limited_incentive":
+            base = min(0.70, base)
+        if action.action_id == "stop_recovery":
+            base = 0.55
+        if (
+            context.case.lane == Lane.CHECKOUT_ABANDONMENT.value
+            and action.action_id in {"payment_link", "checkout_reminder"}
+            and context.derived_signals.high_intent
+        ):
+            base = min(0.92, base + 0.12)
         return round(min(0.99, max(0.01, base)), 4)
 
     def _action_rationale(self, context: RecoveryContext, action: RecoveryAction) -> str:
-        if action.action_id == "human_escalation" and context.derived_signals.repeated_failure:
+        signals = context.derived_signals
+        if action.action_id == "human_escalation" and signals.repeated_failure:
             return "Repeated failures suggest human follow-up may be more effective than another automated retry."
-        if action.is_retry and context.derived_signals.transient_failure:
+        if action.is_retry and signals.transient_failure:
             return "Transient failure; scheduled retry is a low-friction recovery path."
-        if action.action_id == "payment_method_update" and context.derived_signals.expired_payment_method:
+        if action.action_id == "payment_method_update" and signals.expired_payment_method:
             return "Expired or invalid payment method requires customer update before retry."
+        if action.action_id == "checkout_reminder" and signals.high_intent:
+            return "High-intent abandonment; low-friction reminder is preferred before incentives."
+        if action.action_id == "payment_link" and signals.payment_stage_abandonment:
+            return "Payment-stage drop; a direct payment link reduces completion friction."
+        if action.action_id == "limited_incentive":
+            return "Bounded incentive considered only because context suggests price sensitivity under policy."
+        if action.action_id == "stop_recovery":
+            return "Intervention cost outweighs expected recovery; stop further checkout outreach."
         return f"Candidate action: {action.label}"
 
 
