@@ -1,0 +1,18 @@
+# Cross-revenue coordination controls (Phase 6) — simulation, not production CRM.
+
+enabled: true
+
+# Customer-level contact fatigue / collision
+max_customer_contacts_per_window: 1
+contact_window_hours: 24
+min_gap_between_customer_contacts_hours: 24
+
+# Concurrent scarce interventions across a customer's cases
+max_simultaneous_human_escalations: 1
+max_active_incentives: 1
+
+# Prefer automatic/system actions before additional customer outreach
+prefer_system_actions_before_contact: true
+
+# When two contacts compete, keep the higher expected-net-value contact
+defer_lower_value_contacts: true

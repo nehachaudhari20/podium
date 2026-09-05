@@ -17,10 +17,12 @@ from recovery.models.enums import Lane
 from recovery.models.recovery_context import (
     CaseFacts,
     CheckoutSessionFacts,
+    CrossRevenueFacts,
     CustomerHistorySnapshot,
     DerivedSignals,
     RecoveryContext,
     RecoveryHistoryEvent,
+    SiblingCaseFacts,
     assert_no_forbidden_fields,
     utc_now_iso,
 )
@@ -99,6 +101,7 @@ class ContextBuilder:
                 conn, case.customer_id, exclude_case_id=case.case_id
             )
 
+        cross_revenue = self._build_cross_revenue(conn, case)
         signals = self._derive_signals(
             case_facts,
             customer_snapshot,
@@ -106,6 +109,7 @@ class ContextBuilder:
             now,
             checkout=checkout_facts,
             prior_checkout_abandonments=prior_checkouts,
+            cross_revenue=cross_revenue,
         )
 
         context = RecoveryContext(
@@ -115,6 +119,7 @@ class ContextBuilder:
             derived_signals=signals,
             built_at=utc_now_iso(),
             checkout=checkout_facts,
+            cross_revenue=cross_revenue,
         )
         assert_no_forbidden_fields(context.to_dict())
         return context
@@ -238,6 +243,51 @@ class ContextBuilder:
             open_case_count=int(open_cases),
         )
 
+    def _build_cross_revenue(
+        self,
+        conn: sqlite3.Connection,
+        case: RecoveryCaseRuntime,
+    ) -> CrossRevenueFacts:
+        rows = conn.execute(
+            """
+            SELECT case_id, lane, amount, workflow_state, status
+            FROM recovery_cases
+            WHERE customer_id = ? AND status = 'open'
+            ORDER BY amount DESC, case_id
+            """,
+            (case.customer_id,),
+        ).fetchall()
+        siblings = tuple(
+            SiblingCaseFacts(
+                case_id=row["case_id"],
+                lane=row["lane"],
+                amount=float(row["amount"]),
+                workflow_state=row["workflow_state"],
+                status=row["status"],
+            )
+            for row in rows
+            if row["case_id"] != case.case_id
+        )
+        all_cases = tuple(
+            SiblingCaseFacts(
+                case_id=row["case_id"],
+                lane=row["lane"],
+                amount=float(row["amount"]),
+                workflow_state=row["workflow_state"],
+                status=row["status"],
+            )
+            for row in rows
+        )
+        lanes = tuple(sorted({c.lane for c in all_cases}))
+        total = round(sum(c.amount for c in all_cases), 2)
+        return CrossRevenueFacts(
+            total_amount_at_risk=total,
+            active_lanes=lanes,
+            sibling_cases=siblings,
+            open_case_count=len(all_cases),
+            multi_lane_active=len(lanes) > 1,
+        )
+
     def _build_recovery_history(
         self,
         audit_events: list[AuditEvent],
@@ -274,6 +324,7 @@ class ContextBuilder:
         *,
         checkout: CheckoutSessionFacts | None = None,
         prior_checkout_abandonments: int = 0,
+        cross_revenue: CrossRevenueFacts | None = None,
     ) -> DerivedSignals:
         policy = load_policy_config()
         reason = case.failure_reason or ""
@@ -329,6 +380,9 @@ class ContextBuilder:
             if reason == "checkout_cart_abandon":
                 early_stage_abandonment = True
 
+        multi_lane = bool(cross_revenue and cross_revenue.multi_lane_active)
+        has_siblings = bool(cross_revenue and cross_revenue.sibling_cases)
+
         return DerivedSignals(
             first_failure=first_failure,
             repeated_failure=repeated_failure,
@@ -348,6 +402,8 @@ class ContextBuilder:
             repeat_abandoner=repeat_abandoner,
             prior_successful_customer=prior_successful_customer,
             recovery_attempted_before=recovery_attempted_before,
+            multi_lane_active=multi_lane,
+            has_sibling_open_cases=has_siblings,
         )
 
 

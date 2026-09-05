@@ -128,9 +128,10 @@ def run_evaluation() -> None:
             Lane.SUBSCRIPTION_PAYMENT.value,
             Lane.CHECKOUT_ABANDONMENT.value,
             "economics",
+            "coordination",
         ),
         default=Lane.SUBSCRIPTION_PAYMENT.value,
-        help="Evaluation lane (default: subscription_payment; use economics for Phase 5 demos)",
+        help="Evaluation lane (use economics / coordination for Phase 5/6)",
     )
     parser.add_argument(
         "--intelligence",
@@ -159,7 +160,20 @@ def run_evaluation() -> None:
     conn = connect(args.db)
     init_schema(conn)
     try:
-        if args.lane == "economics":
+        if args.lane == "coordination":
+            from recovery.evaluation.phase6_runner import (
+                default_phase6_export_path,
+                export_phase6_evaluation_json,
+                format_phase6_evaluation_report,
+                run_phase6_evaluation,
+            )
+
+            summary = run_phase6_evaluation(conn)
+            print(format_phase6_evaluation_report(summary))
+            if args.export_json:
+                export_phase6_evaluation_json(summary, default_phase6_export_path())
+                print(f"Exported: {default_phase6_export_path()}")
+        elif args.lane == "economics":
             from recovery.evaluation.phase5_runner import (
                 default_phase5_export_path,
                 export_phase5_evaluation_json,
@@ -210,7 +224,7 @@ def run_evaluation() -> None:
             export_path_fn = default_export_path
             compare_name = "phase3_evaluation_compare.json"
 
-        if args.lane != "economics":
+        if args.lane not in {"economics", "coordination"}:
             if args.compare:
                 summaries = compare_fn(conn, limit=args.limit)
                 for mode, summary in summaries.items():

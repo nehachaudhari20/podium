@@ -81,6 +81,31 @@ class CheckoutSessionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class SiblingCaseFacts:
+    """Another open case for the same customer (cross-revenue context)."""
+
+    case_id: str
+    lane: str
+    amount: float
+    workflow_state: str
+    status: str = "open"
+
+
+@dataclass(frozen=True, slots=True)
+class CrossRevenueFacts:
+    """Customer-level multi-case snapshot for intelligence (runtime-safe)."""
+
+    total_amount_at_risk: float
+    active_lanes: tuple[str, ...]
+    sibling_cases: tuple[SiblingCaseFacts, ...]
+    open_case_count: int
+    multi_lane_active: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedSignals:
     """Deterministic signals computed from case facts and history."""
 
@@ -103,6 +128,9 @@ class DerivedSignals:
     repeat_abandoner: bool = False
     prior_successful_customer: bool = False
     recovery_attempted_before: bool = False
+    # Cross-revenue signals (Phase 6)
+    multi_lane_active: bool = False
+    has_sibling_open_cases: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +143,8 @@ class RecoveryContext:
     derived_signals: DerivedSignals
     built_at: str
     checkout: CheckoutSessionFacts | None = None
-    schema_version: str = "4a.1"
+    cross_revenue: CrossRevenueFacts | None = None
+    schema_version: str = "6a.1"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
