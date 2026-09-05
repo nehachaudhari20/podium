@@ -276,6 +276,12 @@ Together, they create a continuous recovery loop:
 
 ---
 
+## Architecture
+
+![Podium architecture](docs/podium-architecture.png)
+
+---
+
 ## Repository layout
 
 ```
