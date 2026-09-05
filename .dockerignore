@@ -1,0 +1,21 @@
+# Keep build contexts small
+.git
+.cursor
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+**/node_modules
+**/dist
+**/coverage
+**/.vite
+debug-*.log
+*.md
+!backend/README.md
+!frontend/README.md
+.env
+**/.env
+agent-transcripts

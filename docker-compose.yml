@@ -1,0 +1,44 @@
+# Run the full Podium stack:
+#   docker compose up --build
+#
+# UI:  http://localhost:3000
+# API: http://localhost:8000
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: podium-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - podium-data:/app/data
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_DATA_MODE: api
+        # Browser calls the published host port (not the docker network name)
+        VITE_API_BASE_URL: http://localhost:8000
+    container_name: podium-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  podium-data:

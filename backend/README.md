@@ -15,6 +15,19 @@ backend/
   tests/          Test suite
 ```
 
+## Docker
+
+From the monorepo root:
+
+```bash
+docker compose up --build
+```
+
+Backend image: `backend/Dockerfile` (API on port 8000).  
+Frontend image: `frontend/Dockerfile` (nginx on port 3000).
+
+On first start the backend entrypoint generates `data/recovery.db` if missing.
+
 ## Setup
 
 ```bash

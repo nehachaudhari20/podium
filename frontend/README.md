@@ -26,6 +26,25 @@ Domain types live in `src/types/domain.ts`. Mock seed data lives in `src/mock/` 
 
 UI components must not import mock data directly — always go through services.
 
+## Docker
+
+From the monorepo root (runs API + UI together):
+
+```bash
+docker compose up --build
+```
+
+UI: http://localhost:3000 · API: http://localhost:8000
+
+Standalone frontend image build:
+
+```bash
+docker build -t podium-frontend \
+  --build-arg VITE_DATA_MODE=api \
+  --build-arg VITE_API_BASE_URL=http://localhost:8000 \
+  -f frontend/Dockerfile frontend
+```
+
 ## Environment
 
 Copy `.env.example` to `.env`:

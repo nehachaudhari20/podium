@@ -16,9 +16,23 @@ Podium/
 
 Revenue at risk → State → Diagnose → Adapt → Coordinate → Allocate → Policy-check → Act → Observe → Learn
 
-## Quick start (end-to-end, Phase 10)
+## Quick start with Docker (recommended)
 
-### Backend API
+From the repo root:
+
+```bash
+docker compose up --build
+```
+
+- UI:  http://localhost:3000
+- API: http://localhost:8000  
+- Health: http://localhost:8000/api/health
+
+Stop with `Ctrl+C`, or background with `docker compose up --build -d`.
+
+### Local (without Docker)
+
+#### Backend API
 
 ```bash
 cd backend
@@ -29,7 +43,7 @@ podium-generate          # if data/recovery.db is missing
 podium-api               # http://127.0.0.1:8000
 ```
 
-### Frontend
+#### Frontend
 
 ```bash
 cd frontend
