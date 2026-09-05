@@ -111,23 +111,23 @@ def run_batch() -> None:
 
 
 def run_evaluation() -> None:
-    """Run Phase 3 intelligence evaluation on subscription cases."""
+    """Run Phase 3/4 intelligence evaluation by lane."""
     import json
 
     from recovery.db import connect, init_schema
     from recovery.env_loader import load_project_env
-    from recovery.evaluation.phase3_runner import (
-        compare_modes,
-        default_export_path,
-        export_evaluation_json,
-        run_phase3_evaluation,
-    )
-    from recovery.evaluation.phase3_metrics import format_evaluation_report
+    from recovery.models.enums import Lane
     from recovery.paths import DEFAULT_DB_PATH
 
     load_project_env()
-    parser = argparse.ArgumentParser(description="Run Phase 3 intelligence evaluation")
+    parser = argparse.ArgumentParser(description="Run Podium recovery evaluation")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="SQLite database path")
+    parser.add_argument(
+        "--lane",
+        choices=(Lane.SUBSCRIPTION_PAYMENT.value, Lane.CHECKOUT_ABANDONMENT.value),
+        default=Lane.SUBSCRIPTION_PAYMENT.value,
+        help="Evaluation lane (default: subscription_payment)",
+    )
     parser.add_argument(
         "--intelligence",
         choices=("deterministic", "hybrid", "gemini"),
@@ -143,7 +143,7 @@ def run_evaluation() -> None:
         "--limit",
         type=int,
         default=None,
-        help="Limit number of subscription cases (default: all)",
+        help="Limit number of cases (default: all)",
     )
     parser.add_argument(
         "--export-json",
@@ -155,27 +155,54 @@ def run_evaluation() -> None:
     conn = connect(args.db)
     init_schema(conn)
     try:
+        if args.lane == Lane.CHECKOUT_ABANDONMENT.value:
+            from recovery.evaluation.phase4_runner import (
+                compare_checkout_modes,
+                default_checkout_export_path,
+                export_checkout_evaluation_json,
+                format_evaluation_report,
+                run_phase4_evaluation,
+            )
+
+            compare_fn = compare_checkout_modes
+            run_fn = run_phase4_evaluation
+            export_fn = export_checkout_evaluation_json
+            export_path_fn = default_checkout_export_path
+            compare_name = "phase4_checkout_evaluation_compare.json"
+        else:
+            from recovery.evaluation.phase3_metrics import format_evaluation_report
+            from recovery.evaluation.phase3_runner import (
+                compare_modes,
+                default_export_path,
+                export_evaluation_json,
+                run_phase3_evaluation,
+            )
+
+            compare_fn = compare_modes
+            run_fn = run_phase3_evaluation
+            export_fn = export_evaluation_json
+            export_path_fn = default_export_path
+            compare_name = "phase3_evaluation_compare.json"
+
         if args.compare:
-            summaries = compare_modes(conn, limit=args.limit)
+            summaries = compare_fn(conn, limit=args.limit)
             for mode, summary in summaries.items():
                 print(format_evaluation_report(summary))
                 print()
                 if args.export_json:
-                    export_evaluation_json(summary, default_export_path(mode))
+                    export_fn(summary, export_path_fn(mode))
             if args.export_json:
                 combined = {mode: s.to_dict() for mode, s in summaries.items()}
-                path = DEFAULT_DB_PATH.parent / "generated" / "phase3_evaluation_compare.json"
+                path = DEFAULT_DB_PATH.parent / "generated" / compare_name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
                 print(f"Comparison exported: {path}")
         else:
-            summary = run_phase3_evaluation(
-                conn, intelligence_mode=args.intelligence, limit=args.limit
-            )
+            summary = run_fn(conn, intelligence_mode=args.intelligence, limit=args.limit)
             print(format_evaluation_report(summary))
             if args.export_json:
-                path = default_export_path(args.intelligence)
-                export_evaluation_json(summary, path)
+                path = export_path_fn(args.intelligence)
+                export_fn(summary, path)
                 print(f"Exported: {path}")
     finally:
         conn.close()
