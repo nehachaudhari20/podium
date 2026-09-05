@@ -7,7 +7,12 @@ Learning never accesses p_pay_anyway or mutates policy.
 
 from __future__ import annotations
 
-from recovery.learning.blend import BlendedProbability, blend_from_store, blend_probability, clamp_probability
+from recovery.learning.blend import (
+    BlendedProbability,
+    blend_from_store,
+    blend_probability,
+    clamp_probability,
+)
 from recovery.learning.calibration import CalibrationReport, compute_calibration
 from recovery.learning.config import LearningConfig, load_learning_config
 from recovery.learning.effectiveness import (
@@ -18,6 +23,8 @@ from recovery.learning.effectiveness import (
     get_historical_evidence,
 )
 from recovery.learning.records import DecisionOutcome, build_decision_outcome
+from recovery.learning.recorder import record_intervention_outcome
+from recovery.learning.replay import LearningReplayReport, replay_outcomes
 from recovery.learning.signals import LearningSignal, generate_learning_signal
 from recovery.learning.store import ExperienceQuery, ExperienceStore
 
@@ -30,6 +37,7 @@ __all__ = [
     "ExperienceStore",
     "HistoricalEvidence",
     "LearningConfig",
+    "LearningReplayReport",
     "LearningSignal",
     "blend_from_store",
     "blend_probability",
@@ -41,4 +49,6 @@ __all__ = [
     "generate_learning_signal",
     "get_historical_evidence",
     "load_learning_config",
+    "record_intervention_outcome",
+    "replay_outcomes",
 ]

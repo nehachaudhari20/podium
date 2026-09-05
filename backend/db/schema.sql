@@ -158,9 +158,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_events(case_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
 
 -- Phase 8: decision → outcome learning records (runtime-safe; never stores p_pay_anyway)
+-- case_id is not FK-bound so batch replay / demos can ingest synthetic history.
 CREATE TABLE IF NOT EXISTS decision_outcomes (
     outcome_id                      TEXT PRIMARY KEY,
-    case_id                         TEXT NOT NULL REFERENCES recovery_cases(case_id),
+    case_id                         TEXT NOT NULL,
     customer_id                     TEXT NOT NULL,
     lane                            TEXT NOT NULL,
     action                          TEXT NOT NULL,

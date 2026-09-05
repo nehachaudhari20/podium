@@ -115,6 +115,10 @@ def resolve_case_id(conn: sqlite3.Connection, scenario: AdaptiveDemoScenario) ->
 def prepare_demo_case(conn: sqlite3.Connection, case_id: str) -> None:
     """Reset case and customer contact counters for a clean demo run."""
     reset_case_for_run(conn, case_id)
+    # Isolate demos from cross-scenario learning contamination.
+    from recovery.learning.store import ExperienceStore
+
+    ExperienceStore(conn).clear()
     row = conn.execute(
         "SELECT customer_id FROM recovery_cases WHERE case_id = ?",
         (case_id,),

@@ -59,27 +59,27 @@ def probability_for_action(
     else:
         prob = base
 
-    # Discourage immediately repeating a failed intervention (supports re-plan diversity).
+    model_prob = round(min(0.99, max(0.0, prob)), 4)
+    if experience_store is not None:
+        from recovery.learning.blend import blend_from_store
+
+        blended = blend_from_store(
+            experience_store,
+            action=action.action_id,
+            lane=lane,
+            model_probability=model_prob,
+            diagnosis=diagnosis,
+        )
+        model_prob = blended.blended_probability
+
+    # Discourage immediately repeating a failed intervention (after evidence blend).
     if last_action and action.action_id == last_action:
-        prob *= 0.35
+        model_prob *= 0.35
     elif last_action and action.action_id in {"checkout_reminder", "invoice_reminder"}:
         # After any prior outreach, a plain reminder is less valuable than a new tactic.
-        prob *= 0.55
+        model_prob *= 0.55
 
-    model_prob = round(min(0.99, max(0.0, prob)), 4)
-    if experience_store is None:
-        return model_prob
-
-    from recovery.learning.blend import blend_from_store
-
-    blended = blend_from_store(
-        experience_store,
-        action=action.action_id,
-        lane=lane,
-        model_probability=model_prob,
-        diagnosis=diagnosis,
-    )
-    return blended.blended_probability
+    return round(min(0.99, max(0.0, model_prob)), 4)
 
 
 def evaluate_candidates(
