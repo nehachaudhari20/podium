@@ -85,6 +85,14 @@ def _simulate_checkout(
         )
 
     if action.action_id == "payment_link":
+        # Price-sensitive abandonments need more than a bare payment link.
+        if cause == "price_sensitivity":
+            return ExecutionResult(
+                action=action.action_id,
+                success=False,
+                event="customer_ignored",
+                detail="Payment link sent; price-sensitive customer did not complete.",
+            )
         if cause in {"payment_friction", "distraction_or_delay"} or ctx.attempt_count >= 2:
             return ExecutionResult(
                 action=action.action_id,

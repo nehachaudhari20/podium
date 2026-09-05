@@ -1,0 +1,75 @@
+# Adaptive checkout demonstration scenarios — Phase 4D
+# Context-driven paths: high-intent, re-plan, low-intent stop, bounded incentive.
+
+scenarios:
+  - id: high_intent_payment_recovery
+    title: "High-intent payment drop — fast completion help"
+    case_id: case_hero_chk_001
+    narrative: >
+      High-intent payment-page abandonment recovers with a payment link.
+      No incentive is offered — low-friction completion is enough.
+    expected:
+      recovered: true
+      min_agent_steps: 1
+      max_agent_steps: 2
+      min_replan_count: 0
+      required_states: [contacted, recovered]
+      required_actions: [payment_link]
+      forbidden_actions: [limited_incentive, stop_recovery]
+
+  - id: non_response_replan
+    title: "Non-response — observe then re-plan"
+    failure_reason: checkout_cart_abandon
+    setup:
+      intent_score: 0.58
+      stage: shipping
+      cart_value: 4500
+      recoverability_hint: medium
+    narrative: >
+      Early/mid-funnel friction: a reminder is ignored, the agent re-plans,
+      and recovers with a different intervention (payment link or assistance).
+    expected:
+      recovered: true
+      min_agent_steps: 2
+      min_replan_count: 1
+      required_states: [contacted, waiting, recovered]
+      forbidden_actions: [limited_incentive]
+
+  - id: low_intent_bounded
+    title: "Low-intent — bounded stop after one touch"
+    failure_reason: checkout_cart_abandon
+    setup:
+      intent_score: 0.22
+      stage: cart
+      cart_value: 1200
+      recoverability_hint: low
+    narrative: >
+      Low purchase intent keeps intervention bounded: one reminder, then
+      stop_recovery rather than chasing with incentives or endless contact.
+    expected:
+      recovered: false
+      min_agent_steps: 2
+      min_replan_count: 1
+      terminal_states: [exhausted]
+      required_actions: [checkout_reminder, stop_recovery]
+      forbidden_actions: [limited_incentive]
+
+  - id: policy_constrained_incentive
+    title: "Price sensitivity — limited incentive under policy"
+    failure_reason: checkout_cart_abandon
+    setup:
+      intent_score: 0.52
+      stage: cart
+      cart_value: 22000
+      recoverability_hint: medium
+    narrative: >
+      High-value early abandon suggests price sensitivity. After non-response
+      the agent may use a limited incentive — only within the merchant
+      discount ceiling, never as unbounded discounting.
+    expected:
+      recovered: true
+      min_agent_steps: 2
+      min_replan_count: 1
+      required_states: [contacted, recovered]
+      required_actions: [limited_incentive]
+      forbidden_actions: [human_escalation]

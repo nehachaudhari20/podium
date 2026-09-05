@@ -86,8 +86,14 @@ def generate_checkout_actions(
     if last_action == "payment_link":
         without_link = [a for a in actions if a.action_id != "payment_link"]
         assist = [a for a in without_link if a.action_id == "checkout_assistance"]
-        rest = [a for a in without_link if a.action_id != "checkout_assistance"]
-        actions = assist + rest if assist else without_link or actions
+        incentive = [a for a in without_link if a.action_id == "limited_incentive"]
+        rest = [
+            a
+            for a in without_link
+            if a.action_id not in {"checkout_assistance", "limited_incentive"}
+        ]
+        preferred = assist + incentive + rest
+        actions = preferred if preferred else without_link or actions
 
     # Already attempted recovery and non-response → avoid repeating same contact blindly.
     if signals.customer_non_response and signals.recovery_attempted_before:
