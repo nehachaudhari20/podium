@@ -67,6 +67,20 @@ class RecoveryHistoryEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckoutSessionFacts:
+    """Checkout-session facts visible to intelligence (runtime-safe)."""
+
+    session_id: str
+    cart_value: float
+    currency: str
+    stage: str
+    intent_score: float | None
+    abandoned_at: str
+    items_count: int
+    hours_since_abandonment: float
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedSignals:
     """Deterministic signals computed from case facts and history."""
 
@@ -80,6 +94,15 @@ class DerivedSignals:
     near_recovery_window_end: bool
     transient_failure: bool = False
     expired_payment_method: bool = False
+    # Checkout-lane signals (default False for non-checkout contexts)
+    high_intent: bool = False
+    high_value_cart: bool = False
+    payment_stage_abandonment: bool = False
+    early_stage_abandonment: bool = False
+    recent_abandonment: bool = False
+    repeat_abandoner: bool = False
+    prior_successful_customer: bool = False
+    recovery_attempted_before: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +114,8 @@ class RecoveryContext:
     recovery_history: tuple[RecoveryHistoryEvent, ...]
     derived_signals: DerivedSignals
     built_at: str
-    schema_version: str = "3a.1"
+    checkout: CheckoutSessionFacts | None = None
+    schema_version: str = "4a.1"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

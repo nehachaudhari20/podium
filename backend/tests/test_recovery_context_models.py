@@ -79,7 +79,7 @@ def test_recovery_context_serializable():
     ctx = _minimal_context()
     data = ctx.to_dict()
     assert data["case"]["case_id"] == "case_ctx_001"
-    assert data["schema_version"] == "3a.1"
+    assert data["schema_version"] == "4a.1"
     assert len(data["recovery_history"]) == 1
 
 

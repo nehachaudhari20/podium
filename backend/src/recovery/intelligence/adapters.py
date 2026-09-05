@@ -47,6 +47,14 @@ def context_key_factors(context: RecoveryContext) -> tuple[str, ...]:
         "near_recovery_window_end": signals.near_recovery_window_end,
         "transient_failure": signals.transient_failure,
         "expired_payment_method": signals.expired_payment_method,
+        "high_intent": signals.high_intent,
+        "high_value_cart": signals.high_value_cart,
+        "payment_stage_abandonment": signals.payment_stage_abandonment,
+        "early_stage_abandonment": signals.early_stage_abandonment,
+        "recent_abandonment": signals.recent_abandonment,
+        "repeat_abandoner": signals.repeat_abandoner,
+        "prior_successful_customer": signals.prior_successful_customer,
+        "recovery_attempted_before": signals.recovery_attempted_before,
     }
     for name, active in mapping.items():
         if active:

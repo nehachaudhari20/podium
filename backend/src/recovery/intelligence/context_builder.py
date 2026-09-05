@@ -1,4 +1,4 @@
-"""Deterministic recovery context builder — Phase 3A."""
+"""Deterministic recovery context builder — Phase 3A / 4A."""
 
 from __future__ import annotations
 
@@ -6,11 +6,17 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from recovery.audit.trail import load_audit_trail
+from recovery.ingestion.checkout_loader import (
+    count_prior_checkout_abandonments,
+    load_checkout_session_by_case,
+)
 from recovery.ingestion.customer_loader import load_customer_context
 from recovery.ingestion.runtime_loader import load_case_by_id
 from recovery.models.case import RecoveryCaseRuntime
+from recovery.models.enums import Lane
 from recovery.models.recovery_context import (
     CaseFacts,
+    CheckoutSessionFacts,
     CustomerHistorySnapshot,
     DerivedSignals,
     RecoveryContext,
@@ -39,8 +45,17 @@ ACTION_EVENT_TYPES = frozenset(
         "RETRY_SCHEDULED",
         "SIM_TIME_ADVANCED",
         "PAYMENT_METHOD_UPDATE",
+        "AGENT_OBSERVE",
+        "AGENT_REPLAN",
+        "DECISION_PROPOSED",
     }
 )
+
+HIGH_INTENT_THRESHOLD = 0.7
+HIGH_VALUE_CART_INR = 15000.0
+RECENT_ABANDONMENT_HOURS = 24.0
+EARLY_STAGES = frozenset({"cart", "shipping"})
+PAYMENT_STAGES = frozenset({"payment_page", "payment"})
 
 
 class ContextBuilder:
@@ -68,13 +83,30 @@ class ContextBuilder:
         now: datetime | None = None,
     ) -> RecoveryContext:
         now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
         customer_ctx = load_customer_context(conn, case.customer_id)
         customer_snapshot = self._load_customer_snapshot(conn, case, customer_ctx)
         audit_events = load_audit_trail(conn, case.case_id)
         recovery_history = self._build_recovery_history(audit_events)
 
         case_facts = self._build_case_facts(case, run_context)
-        signals = self._derive_signals(case_facts, customer_snapshot, recovery_history, now)
+        checkout_facts = self._build_checkout_facts(conn, case, now)
+        prior_checkouts = 0
+        if case.lane == Lane.CHECKOUT_ABANDONMENT.value:
+            prior_checkouts = count_prior_checkout_abandonments(
+                conn, case.customer_id, exclude_case_id=case.case_id
+            )
+
+        signals = self._derive_signals(
+            case_facts,
+            customer_snapshot,
+            recovery_history,
+            now,
+            checkout=checkout_facts,
+            prior_checkout_abandonments=prior_checkouts,
+        )
 
         context = RecoveryContext(
             case=case_facts,
@@ -82,6 +114,7 @@ class ContextBuilder:
             recovery_history=tuple(recovery_history),
             derived_signals=signals,
             built_at=utc_now_iso(),
+            checkout=checkout_facts,
         )
         assert_no_forbidden_fields(context.to_dict())
         return context
@@ -120,6 +153,35 @@ class ContextBuilder:
             is_hero=case.is_hero,
             last_action=last_action,
             payment_method_updated=payment_method_updated,
+        )
+
+    def _build_checkout_facts(
+        self,
+        conn: sqlite3.Connection,
+        case: RecoveryCaseRuntime,
+        now: datetime,
+    ) -> CheckoutSessionFacts | None:
+        if case.lane != Lane.CHECKOUT_ABANDONMENT.value:
+            return None
+
+        session = load_checkout_session_by_case(conn, case.case_id)
+        if session is None:
+            return None
+
+        abandoned = session.abandoned_at
+        if abandoned.tzinfo is None:
+            abandoned = abandoned.replace(tzinfo=timezone.utc)
+        hours = max(0.0, (now - abandoned).total_seconds() / 3600.0)
+
+        return CheckoutSessionFacts(
+            session_id=session.session_id,
+            cart_value=session.cart_value,
+            currency=session.currency,
+            stage=session.stage,
+            intent_score=session.intent_score,
+            abandoned_at=abandoned.isoformat(),
+            items_count=session.items_count,
+            hours_since_abandonment=round(hours, 2),
         )
 
     def _load_customer_snapshot(
@@ -209,6 +271,9 @@ class ContextBuilder:
         customer: CustomerHistorySnapshot,
         history: list[RecoveryHistoryEvent],
         now: datetime,
+        *,
+        checkout: CheckoutSessionFacts | None = None,
+        prior_checkout_abandonments: int = 0,
     ) -> DerivedSignals:
         policy = load_policy_config()
         reason = case.failure_reason or ""
@@ -219,7 +284,16 @@ class ContextBuilder:
         retry_exhaustion_risk = case.attempt_count >= max(policy.max_retries - 1, 0)
         recent_contact = customer.prior_contacts_7d > 0 or any(
             e.event_type in ("ACTION_EXECUTED", "STATE_TRANSITION")
-            and e.action in ("payment_method_update", "send_email", "send_whatsapp", "send_sms")
+            and e.action
+            in (
+                "payment_method_update",
+                "send_email",
+                "send_whatsapp",
+                "send_sms",
+                "checkout_reminder",
+                "payment_link",
+                "checkout_assistance",
+            )
             for e in history
         )
         customer_non_response = customer.contacts_with_no_response > 0
@@ -228,6 +302,32 @@ class ContextBuilder:
         if window_end.tzinfo is None:
             window_end = window_end.replace(tzinfo=timezone.utc)
         near_window_end = (window_end - now) <= timedelta(days=3)
+
+        high_intent = False
+        high_value_cart = False
+        payment_stage_abandonment = False
+        early_stage_abandonment = False
+        recent_abandonment = False
+        repeat_abandoner = False
+        prior_successful_customer = prior_successful_payment
+        recovery_attempted_before = (
+            case.attempt_count > 0 or customer.prior_recovery_actions > 0 or len(history) > 0
+        )
+
+        if checkout is not None:
+            intent = checkout.intent_score
+            high_intent = intent is not None and intent >= HIGH_INTENT_THRESHOLD
+            high_value_cart = checkout.cart_value >= HIGH_VALUE_CART_INR
+            payment_stage_abandonment = checkout.stage in PAYMENT_STAGES
+            early_stage_abandonment = checkout.stage in EARLY_STAGES
+            recent_abandonment = checkout.hours_since_abandonment <= RECENT_ABANDONMENT_HOURS
+            repeat_abandoner = prior_checkout_abandonments > 0
+            if reason == "checkout_high_intent_drop":
+                high_intent = True
+            if reason == "checkout_payment_page_drop":
+                payment_stage_abandonment = True
+            if reason == "checkout_cart_abandon":
+                early_stage_abandonment = True
 
         return DerivedSignals(
             first_failure=first_failure,
@@ -240,6 +340,14 @@ class ContextBuilder:
             near_recovery_window_end=near_window_end,
             transient_failure=reason in TRANSIENT_FAILURE_REASONS,
             expired_payment_method=reason in EXPIRED_METHOD_REASONS,
+            high_intent=high_intent,
+            high_value_cart=high_value_cart,
+            payment_stage_abandonment=payment_stage_abandonment,
+            early_stage_abandonment=early_stage_abandonment,
+            recent_abandonment=recent_abandonment,
+            repeat_abandoner=repeat_abandoner,
+            prior_successful_customer=prior_successful_customer,
+            recovery_attempted_before=recovery_attempted_before,
         )
 
 
