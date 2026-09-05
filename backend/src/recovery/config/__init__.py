@@ -29,3 +29,7 @@ def load_recovery_budget(config_dir: Path | None = None) -> dict[str, Any]:
 
 def load_actions(config_dir: Path | None = None) -> dict[str, Any]:
     return load_yaml("actions.yaml", config_dir)
+
+
+def load_economics(config_dir: Path | None = None) -> dict[str, Any]:
+    return load_yaml("economics.yaml", config_dir)

@@ -1,0 +1,47 @@
+# Economic decision controls (Phase 5) — simulation costs, not production prices.
+
+enabled: true
+
+# Core rule: pursue only if expected_net_value >= minimum_expected_net_value
+minimum_expected_net_value: 0.0
+minimum_recovery_probability: 0.0
+# null = no maximum cost cap beyond policy
+maximum_intervention_cost: null
+
+# Limited incentive cost as a share of amount_at_risk (simulation)
+incentive_cost_pct: 10.0
+
+# Scarce recovery capacity (batch / demo allocation)
+capacity:
+  max_voice_calls_per_batch: 10
+  max_human_escalations_per_batch: 5
+  max_incentive_budget: 5000
+
+# Runtime action_id → intervention cost (INR). Overrides actions.yaml base_cost when set.
+action_costs:
+  retry_6h: 1
+  retry_24h: 1
+  retry_72h: 1
+  retry_after_update: 1
+  retry_payment: 1
+  payment_method_update: 2
+  checkout_reminder: 2
+  payment_link: 2
+  checkout_assistance: 5
+  send_email: 2
+  send_whatsapp: 5
+  send_sms: 3
+  voice_call: 50
+  human_escalation: 500
+  stop_recovery: 0
+  defer: 0
+  # limited_incentive cost is derived from amount * incentive_cost_pct
+  limited_incentive: 0
+  offer_discount: 0
+
+# Capacity pool key for scarce actions (omit = unlimited / no capacity gate)
+scarce_capacity:
+  voice_call: voice_call
+  human_escalation: human_escalation
+  limited_incentive: incentive_budget
+  offer_discount: incentive_budget
