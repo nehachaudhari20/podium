@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from recovery.economics.config import EconomicsConfig, intervention_cost_for, load_economics_config
 from recovery.economics.model import EconomicCandidate, EconomicDecision, evaluate_action_economics
 from recovery.intelligence.contracts import PredictiveSignals
 from recovery.models.recovery_types import RecoveryAction
+
+if TYPE_CHECKING:
+    from recovery.learning.store import ExperienceStore
 
 
 def probability_for_action(
@@ -13,10 +18,14 @@ def probability_for_action(
     predictive: PredictiveSignals,
     *,
     last_action: str | None = None,
+    experience_store: "ExperienceStore | None" = None,
+    lane: str | None = None,
+    diagnosis: str | None = None,
 ) -> float:
     """Map predictive signals to an action-specific recovery probability estimate.
 
     Distinct from the hidden evaluator-only pay-anyway ground truth — runtime estimate only.
+    Optional historical evidence may blend into the model probability (Phase 8).
     """
     base = predictive.estimated_recovery_probability
     if action.action_id in {"stop_recovery", "defer"}:
@@ -57,7 +66,20 @@ def probability_for_action(
         # After any prior outreach, a plain reminder is less valuable than a new tactic.
         prob *= 0.55
 
-    return round(min(0.99, max(0.0, prob)), 4)
+    model_prob = round(min(0.99, max(0.0, prob)), 4)
+    if experience_store is None:
+        return model_prob
+
+    from recovery.learning.blend import blend_from_store
+
+    blended = blend_from_store(
+        experience_store,
+        action=action.action_id,
+        lane=lane,
+        model_probability=model_prob,
+        diagnosis=diagnosis,
+    )
+    return blended.blended_probability
 
 
 def evaluate_candidates(
@@ -67,11 +89,21 @@ def evaluate_candidates(
     predictive: PredictiveSignals,
     config: EconomicsConfig | None = None,
     last_action: str | None = None,
+    experience_store: "ExperienceStore | None" = None,
+    lane: str | None = None,
+    diagnosis: str | None = None,
 ) -> list[EconomicCandidate]:
     cfg = config or load_economics_config()
     candidates: list[EconomicCandidate] = []
     for action in actions:
-        prob = probability_for_action(action, predictive, last_action=last_action)
+        prob = probability_for_action(
+            action,
+            predictive,
+            last_action=last_action,
+            experience_store=experience_store,
+            lane=lane,
+            diagnosis=diagnosis,
+        )
         cost = intervention_cost_for(action.action_id, amount_at_risk, cfg)
         candidates.append(
             evaluate_action_economics(
@@ -104,17 +136,23 @@ def select_best_economic_action(
     predictive: PredictiveSignals,
     config: EconomicsConfig | None = None,
     last_action: str | None = None,
+    experience_store: "ExperienceStore | None" = None,
+    lane: str | None = None,
+    diagnosis: str | None = None,
 ) -> EconomicDecision:
     """Decision 1: which action for this case maximizes expected net value."""
     cfg = config or load_economics_config()
+    kwargs = dict(
+        amount_at_risk=amount_at_risk,
+        predictive=predictive,
+        config=cfg,
+        last_action=last_action,
+        experience_store=experience_store,
+        lane=lane,
+        diagnosis=diagnosis,
+    )
     if not cfg.enabled:
-        candidates = evaluate_candidates(
-            actions,
-            amount_at_risk=amount_at_risk,
-            predictive=predictive,
-            config=cfg,
-            last_action=last_action,
-        )
+        candidates = evaluate_candidates(actions, **kwargs)
         selected = candidates[0] if candidates else None
         return EconomicDecision(
             candidates=tuple(candidates),
@@ -122,13 +160,7 @@ def select_best_economic_action(
             economic_reason="economics_disabled_passthrough",
         )
 
-    candidates = evaluate_candidates(
-        actions,
-        amount_at_risk=amount_at_risk,
-        predictive=predictive,
-        config=cfg,
-        last_action=last_action,
-    )
+    candidates = evaluate_candidates(actions, **kwargs)
     ranked = rank_eligible(candidates)
     if ranked:
         best = ranked[0]

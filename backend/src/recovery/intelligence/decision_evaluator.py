@@ -13,6 +13,7 @@ from recovery.economics.engine import economically_ordered_actions, select_best_
 from recovery.economics.model import EconomicDecision
 from recovery.ingestion.customer_loader import CustomerContext
 from recovery.intelligence.contracts import DecisionProposal
+from recovery.learning.store import ExperienceStore
 from recovery.models.case import RecoveryCaseRuntime
 from recovery.models.recovery_types import PolicyResult, RecoveryAction
 from recovery.policy.gate import check_policy, select_first_allowed_action
@@ -42,14 +43,22 @@ def evaluate_decision_proposal(
     economics_config: EconomicsConfig | None = None,
     capacity_pool: CapacityPool | None = None,
     last_action: str | None = None,
+    experience_store: ExperienceStore | None = None,
 ) -> EvaluatedDecision:
     """Rank by economics (when enabled), then select first policy-allowed action.
 
     Invariant: no economically attractive action may bypass policy.
+    Learning may influence probabilities; policy/capacity remain authoritative.
     """
     cfg = economics_config if economics_config is not None else load_economics_config()
     economic_decision: EconomicDecision | None = None
     capacity_decision: str | None = None
+    store = experience_store
+    if store is None and conn is not None:
+        from recovery.learning.config import load_learning_config
+
+        if load_learning_config().enabled:
+            store = ExperienceStore(conn)
 
     if cfg.enabled:
         economic_decision = select_best_economic_action(
@@ -58,6 +67,9 @@ def evaluate_decision_proposal(
             predictive=proposal.predictive,
             config=cfg,
             last_action=last_action,
+            experience_store=store,
+            lane=case.lane,
+            diagnosis=proposal.reasoning.likely_cause,
         )
         actions = economically_ordered_actions(economic_decision)
         # Ensure recommended remains available as fallback candidate.

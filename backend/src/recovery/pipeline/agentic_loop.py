@@ -18,6 +18,10 @@ from recovery.intelligence.context_builder import build_recovery_context
 from recovery.intelligence.contracts import DecisionProposal
 from recovery.intelligence.decision_evaluator import EvaluatedDecision, evaluate_decision_proposal
 from recovery.intelligence.decisioning import HybridDecisionIntelligence
+from recovery.learning.blend import blend_from_store
+from recovery.learning.config import load_learning_config
+from recovery.learning.recorder import record_intervention_outcome
+from recovery.learning.store import ExperienceStore
 from recovery.models.enums import Lane, WorkflowState
 from recovery.models.recovery_types import DiagnosisResult, ExecutionResult, PolicyResult, RecoveryAction
 from recovery.policy.gate import PolicyConfig
@@ -62,6 +66,7 @@ class AgenticLoopResult:
     recovered: bool = False
     economic_decision: object | None = None
     capacity_decision: str | None = None
+    outcomes_recorded: int = 0
 
 
 class AgenticRecoveryLoop:
@@ -75,12 +80,16 @@ class AgenticRecoveryLoop:
         max_steps: int = MAX_AGENT_STEPS,
         economics_config: EconomicsConfig | None = None,
         capacity_pool: CapacityPool | None = None,
+        learning_enabled: bool | None = None,
     ) -> None:
         self._decision_engine = decision_engine
         self._policy = policy
         self._max_steps = max_steps
         self._economics_config = economics_config if economics_config is not None else load_economics_config()
         self._capacity_pool = capacity_pool
+        self._learning_enabled = (
+            load_learning_config().enabled if learning_enabled is None else learning_enabled
+        )
 
     def run(
         self,
@@ -92,6 +101,7 @@ class AgenticRecoveryLoop:
     ) -> AgenticLoopResult:
         result = AgenticLoopResult()
         previous_recommended: str | None = None
+        experience_store = ExperienceStore(conn) if self._learning_enabled else None
 
         for step in range(self._max_steps):
             if is_terminal_state(ctx.workflow_state):
@@ -169,6 +179,28 @@ class AgenticRecoveryLoop:
                 },
             )
 
+            if experience_store is not None:
+                for candidate in proposal.candidate_actions:
+                    model_p = proposal.predictive.estimated_recovery_probability
+                    blended = blend_from_store(
+                        experience_store,
+                        action=candidate.action_id,
+                        lane=ctx.case.lane,
+                        model_probability=model_p,
+                        diagnosis=result.diagnosis.likely_cause if result.diagnosis else None,
+                    )
+                    if blended.used_history:
+                        self._audit(
+                            conn,
+                            ctx,
+                            clock,
+                            "HISTORICAL_EVIDENCE_USED",
+                            candidate.action_id,
+                            "learning",
+                            blended.reason,
+                            blended.to_dict(),
+                        )
+
             evaluated = evaluate_decision_proposal(
                 proposal,
                 ctx.sync_case_view(),
@@ -179,6 +211,7 @@ class AgenticRecoveryLoop:
                 economics_config=self._economics_config,
                 capacity_pool=self._capacity_pool,
                 last_action=ctx.last_action,
+                experience_store=experience_store,
             )
             result.economic_decision = evaluated.economic_decision
             result.capacity_decision = evaluated.capacity_decision
@@ -371,6 +404,7 @@ class AgenticRecoveryLoop:
                 outcome = process_outcome(ctx, execution)
 
             outcome_summary = outcome.summary
+            state_before_outcome = ctx.workflow_state
             if outcome.trigger and can_transition(ctx, outcome.trigger):
                 self._apply_and_audit(conn, ctx, clock, outcome.trigger, "outcome_engine", outcome.summary)
                 self._audit(
@@ -382,6 +416,32 @@ class AgenticRecoveryLoop:
                     "outcome_engine",
                     outcome.summary,
                 )
+
+            if experience_store is not None:
+                est_prob = None
+                cost = 0.0
+                if evaluated.economic_decision is not None:
+                    for candidate in evaluated.economic_decision.candidates:
+                        if candidate.action_id == selected.action_id:
+                            est_prob = candidate.estimated_recovery_probability
+                            cost = candidate.intervention_cost
+                            break
+                recorded = record_intervention_outcome(
+                    conn,
+                    ctx,
+                    action=selected,
+                    execution=execution,
+                    outcome=outcome,
+                    state_before=state_before_outcome,
+                    estimated_probability=est_prob,
+                    intervention_cost=cost,
+                    diagnosis=result.diagnosis.likely_cause if result.diagnosis else None,
+                    decision_source=result.decision_source,
+                    timestamp=clock.now.isoformat(),
+                    store=experience_store,
+                )
+                if recorded is not None:
+                    result.outcomes_recorded += 1
 
             result.steps.append(
                 AgentStepRecord(
