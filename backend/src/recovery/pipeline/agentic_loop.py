@@ -295,7 +295,10 @@ class AgenticRecoveryLoop:
                 result.recovered = True
                 break
 
-            if execution.event == "payment_failed" and outcome.trigger != "max_retries_exceeded":
+            if (
+                execution.event in {"payment_failed", "customer_ignored"}
+                and outcome.trigger != "max_retries_exceeded"
+            ):
                 if ctx.workflow_state != WorkflowState.WAITING.value:
                     ctx.record_state(WorkflowState.WAITING.value)
                     self._audit(
@@ -378,6 +381,16 @@ class AgenticRecoveryLoop:
                 )
             return
 
+        if action.action_id in {"limited_incentive", "offer_discount"} and state in (
+            WorkflowState.DIAGNOSED.value,
+            WorkflowState.WAITING.value,
+        ):
+            if can_transition(ctx, "contact_sent"):
+                self._apply_and_audit(
+                    conn, ctx, clock, "contact_sent", "state_machine", f"Applying {action.action_id}."
+                )
+            return
+
         if action.action_id == "human_escalation" and can_transition(ctx, "escalated"):
             self._apply_and_audit(conn, ctx, clock, "escalated", "state_machine", "Escalating to human agent.")
 
@@ -448,10 +461,14 @@ def _diagnosis_from_proposal(proposal: DecisionProposal) -> DiagnosisResult:
 def _outcome_event_type(outcome) -> str:
     if outcome.recovered:
         return "RECOVERED"
-    if outcome.trigger == "max_retries_exceeded":
+    if outcome.trigger in {"max_retries_exceeded", "recovery_stopped"}:
         return "EXHAUSTED"
     if outcome.trigger == "escalated":
         return "ESCALATED"
+    if outcome.trigger == "deferred":
+        return "DEFERRED"
     if outcome.trigger == "payment_method_updated":
         return "PAYMENT_METHOD_UPDATE"
+    if outcome.trigger is None and "Checkout" in (outcome.summary or ""):
+        return "CUSTOMER_IGNORED"
     return "PAYMENT_FAILED"

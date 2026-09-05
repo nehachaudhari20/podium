@@ -35,13 +35,57 @@ SUBSCRIPTION_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
         ),
         WorkflowState.RECOVERED.value,
     ),
+    "checkout_completed": (
+        frozenset(
+            {
+                WorkflowState.DIAGNOSED.value,
+                WorkflowState.WAITING.value,
+                WorkflowState.CONTACTED.value,
+            }
+        ),
+        WorkflowState.RECOVERED.value,
+    ),
     "max_retries_exceeded": (
-        frozenset({WorkflowState.WAITING.value, WorkflowState.RETRY_SCHEDULED.value}),
+        frozenset(
+            {
+                WorkflowState.WAITING.value,
+                WorkflowState.RETRY_SCHEDULED.value,
+                WorkflowState.CONTACTED.value,
+                WorkflowState.DIAGNOSED.value,
+            }
+        ),
         WorkflowState.EXHAUSTED.value,
     ),
     "escalated": (
-        frozenset({WorkflowState.WAITING.value, WorkflowState.CONTACTED.value}),
+        frozenset(
+            {
+                WorkflowState.WAITING.value,
+                WorkflowState.CONTACTED.value,
+                WorkflowState.DIAGNOSED.value,
+            }
+        ),
         WorkflowState.ESCALATED.value,
+    ),
+    "recovery_stopped": (
+        frozenset(
+            {
+                WorkflowState.DETECTED.value,
+                WorkflowState.DIAGNOSED.value,
+                WorkflowState.WAITING.value,
+                WorkflowState.CONTACTED.value,
+            }
+        ),
+        WorkflowState.EXHAUSTED.value,
+    ),
+    "deferred": (
+        frozenset(
+            {
+                WorkflowState.DIAGNOSED.value,
+                WorkflowState.WAITING.value,
+                WorkflowState.CONTACTED.value,
+            }
+        ),
+        WorkflowState.DEFERRED.value,
     ),
     "customer_opts_out": (
         frozenset(
@@ -77,7 +121,12 @@ def apply_transition(ctx: CaseRunContext, trigger: str) -> str:
             f"Cannot apply '{trigger}' from state '{ctx.workflow_state}'"
         )
     ctx.record_state(to_state)
-    if to_state in (WorkflowState.RECOVERED.value, WorkflowState.EXHAUSTED.value, WorkflowState.ESCALATED.value):
+    if to_state in (
+        WorkflowState.RECOVERED.value,
+        WorkflowState.EXHAUSTED.value,
+        WorkflowState.ESCALATED.value,
+        WorkflowState.DEFERRED.value,
+    ):
         ctx.terminal = True
     return to_state
 
@@ -85,6 +134,8 @@ def apply_transition(ctx: CaseRunContext, trigger: str) -> str:
 def action_to_initial_trigger(action: RecoveryAction) -> str:
     if action.is_retry:
         return "retry_scheduled"
-    if action.is_contact:
+    if action.is_contact or action.action_id in {"limited_incentive", "offer_discount"}:
         return "contact_sent"
+    if action.action_id == "stop_recovery":
+        return "recovery_stopped"
     return "retry_scheduled"

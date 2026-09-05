@@ -147,6 +147,7 @@ def test_runtime_modules_do_not_reference_ground_truth():
         Path("src/recovery/execution/sim_clock.py"),
         Path("src/recovery/execution/outcomes.py"),
         Path("src/recovery/pipeline/subscription_runner.py"),
+        Path("src/recovery/pipeline/checkout_runner.py"),
         Path("src/recovery/ingestion/runtime_loader.py"),
     ]
     forbidden = ("case_ground_truth", "p_pay_anyway")

@@ -10,7 +10,11 @@ import sqlite3
 from recovery.config import load_policy
 from recovery.ingestion.customer_loader import CustomerContext, count_recent_contacts
 from recovery.models.case import RecoveryCaseRuntime
+from recovery.models.enums import Lane
 from recovery.models.recovery_types import PolicyResult, RecoveryAction
+
+# Simulated limited incentive offer size — must stay under merchant ceiling.
+_LIMITED_INCENTIVE_PCT = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,8 @@ class PolicyConfig:
     min_contact_cooldown_hours: int
     max_contacts_per_7_days: int
     opt_out_protection: bool
+    discount_ceiling_pct: int
+    human_only_threshold_amount: float
 
 
 def load_policy_config() -> PolicyConfig:
@@ -28,6 +34,8 @@ def load_policy_config() -> PolicyConfig:
         min_contact_cooldown_hours=int(raw["min_contact_cooldown_hours"]),
         max_contacts_per_7_days=int(raw["max_contacts_per_7_days"]),
         opt_out_protection=bool(raw["opt_out_protection"]),
+        discount_ceiling_pct=int(raw.get("discount_ceiling_pct", 0)),
+        human_only_threshold_amount=float(raw.get("human_only_threshold_amount", 0)),
     )
 
 
@@ -59,6 +67,16 @@ def check_policy(
             reason="Maximum retry count exceeded.",
         )
 
+    checkout_attempt = case.lane == Lane.CHECKOUT_ABANDONMENT.value and (
+        action.is_contact or action.action_id in {"limited_incentive", "offer_discount"}
+    )
+    if checkout_attempt and case.attempt_count >= policy.max_retries:
+        return PolicyResult(
+            allowed=False,
+            action=action.action_id,
+            reason="Maximum checkout recovery attempts exceeded.",
+        )
+
     if action.is_contact:
         total_contacts = customer.prior_contacts_7d
         if conn is not None:
@@ -70,6 +88,17 @@ def check_policy(
                 allowed=False,
                 action=action.action_id,
                 reason="Maximum contacts in 7 days exceeded.",
+            )
+
+    if action.action_id in {"limited_incentive", "offer_discount"}:
+        if policy.discount_ceiling_pct <= 0 or _LIMITED_INCENTIVE_PCT > policy.discount_ceiling_pct:
+            return PolicyResult(
+                allowed=False,
+                action=action.action_id,
+                reason=(
+                    f"Incentive {_LIMITED_INCENTIVE_PCT}% exceeds discount ceiling "
+                    f"({policy.discount_ceiling_pct}%)."
+                ),
             )
 
     if action.is_retry and last_retry_at is not None:

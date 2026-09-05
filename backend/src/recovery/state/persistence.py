@@ -16,6 +16,7 @@ def save_case_state(conn: sqlite3.Connection, ctx: CaseRunContext) -> None:
         WorkflowState.RECOVERED.value,
         WorkflowState.EXHAUSTED.value,
         WorkflowState.ESCALATED.value,
+        WorkflowState.DEFERRED.value,
     ) else "open"
     conn.execute(
         """
