@@ -1,0 +1,83 @@
+# Deterministic economic demonstration scenarios — Phase 5
+
+scenarios:
+  - id: cheap_action_wins
+    title: "Cheap retry beats higher-probability human escalation"
+    narrative: >
+      Even though human escalation has a higher recovery probability,
+      expected net value favors a near-zero-cost retry.
+    amount_at_risk: 5000
+    predictive:
+      estimated_recovery_probability: 0.50
+      retry_success_likelihood: 0.50
+      responsiveness_score: 0.55
+    actions:
+      - {id: retry_24h, is_retry: true, retry_delay_hours: 24}
+      - {id: human_escalation, is_contact: true, channel: human}
+    expected_selected: retry_24h
+
+  - id: expensive_justified
+    title: "High-value case justifies expensive escalation"
+    narrative: >
+      On a large amount at risk, human escalation creates higher expected
+      net value than a low-probability cheap retry.
+    amount_at_risk: 50000
+    predictive:
+      estimated_recovery_probability: 0.55
+      retry_success_likelihood: 0.20
+      responsiveness_score: 0.60
+    actions:
+      - {id: retry_24h, is_retry: true, retry_delay_hours: 24}
+      - {id: human_escalation, is_contact: true, channel: human}
+    expected_selected: human_escalation
+
+  - id: negative_expected_value
+    title: "Negative expected net value — do not pursue"
+    narrative: >
+      Low probability and high relative cost produce negative expected net
+      value; economics rejects the intervention.
+    amount_at_risk: 200
+    predictive:
+      estimated_recovery_probability: 0.10
+      retry_success_likelihood: 0.10
+      responsiveness_score: 0.10
+    actions:
+      - {id: voice_call, channel: voice}
+      - {id: stop_recovery}
+    expected_selected: stop_recovery
+    expect_ineligible: [voice_call]
+
+  - id: scarce_capacity
+    title: "Scarce human capacity — highest value cases win"
+    narrative: >
+      Multiple cases compete for limited human-escalation slots. Capacity
+      is allocated greedily by expected net value.
+    type: capacity
+    capacity:
+      max_human_escalations_per_batch: 2
+      max_voice_calls_per_batch: 10
+      max_incentive_budget: 5000
+    requests:
+      - {case_id: case_A, amount: 10000, probability: 0.50, cost: 500}   # ENV 4500
+      - {case_id: case_B, amount: 8000, probability: 0.50, cost: 500}    # ENV 3500
+      - {case_id: case_C, amount: 4000, probability: 0.50, cost: 500}    # ENV 1500
+    expected_selected_cases: [case_A, case_B]
+    expected_deferred_cases: [case_C]
+
+  - id: policy_overrides_economics
+    title: "Policy rejects economically attractive contact"
+    narrative: >
+      Economics ranks a contact highly, but opt-out policy blocks it.
+      Execution never happens for the blocked action.
+    type: policy
+    amount_at_risk: 20000
+    predictive:
+      estimated_recovery_probability: 0.70
+      retry_success_likelihood: 0.20
+      responsiveness_score: 0.80
+    actions:
+      - {id: human_escalation, is_contact: true, channel: human}
+      - {id: retry_24h, is_retry: true, retry_delay_hours: 24}
+    opt_out: true
+    expected_selected: retry_24h
+    expect_policy_blocks: human_escalation
