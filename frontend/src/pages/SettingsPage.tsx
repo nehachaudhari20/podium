@@ -71,7 +71,14 @@ export function SettingsPage() {
         title="Settings"
         subtitle="Recovery policies, capacity, and operational preferences."
         actions={
-          <Button onClick={save}>Save changes</Button>
+          <div className="flex items-center gap-2">
+            {(form as SettingsState & { readOnly?: boolean }).readOnly && (
+              <span className="text-xs text-ink-400">Read-only from backend policy YAML</span>
+            )}
+            <Button onClick={save} disabled={(form as SettingsState & { readOnly?: boolean }).readOnly}>
+              Save changes
+            </Button>
+          </div>
         }
       />
 

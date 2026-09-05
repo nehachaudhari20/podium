@@ -12,6 +12,7 @@ import {
 import { useAsyncData } from '@/hooks/useAsyncData'
 import { formatINR, formatPercent, cn } from '@/lib/format'
 import { services } from '@/services'
+import { useToast } from '@/components/common/Toast'
 import type { PipelineStage, RecoveryCase } from '@/types/domain'
 
 function WhyActionDrawer({
@@ -79,9 +80,34 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
   )
   const [activeStage, setActiveStage] = useState<PipelineStage | null>(null)
   const [whyOpen, setWhyOpen] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [liveCase, setLiveCase] = useState<RecoveryCase | null>(null)
+  const { toast } = useToast()
+
+  const view = liveCase ?? data
+
+  const runRecovery = async () => {
+    if (!services.recovery.runCase) {
+      toast('Run Recovery is only available in API mode', 'error')
+      return
+    }
+    setRunning(true)
+    try {
+      const result = await services.recovery.runCase(caseId, {
+        reset: true,
+        intelligence: 'deterministic',
+      })
+      setLiveCase(result.case)
+      toast('Recovery run completed', 'success')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Recovery run failed', 'error')
+    } finally {
+      setRunning(false)
+    }
+  }
 
   if (error) return <ErrorState onRetry={reload} />
-  if (loading || !data) {
+  if (loading || !view) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-28" />
@@ -91,24 +117,29 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
     )
   }
 
-  const decision = data.decision
-  const stage = activeStage ?? data.pipeline?.find((p) => p.status === 'active')?.stage ?? 'diagnosis'
+  const decision = view.decision
+  const stage = activeStage ?? view.pipeline?.find((p) => p.status === 'active')?.stage ?? 'diagnosis'
 
   return (
     <div>
       <PageHeader
-        title={data.customerName}
-        subtitle={`${data.lane} · ${data.caseRef}`}
+        title={view.customerName}
+        subtitle={`${view.lane} · ${view.caseRef}`}
         actions={
           <div className="flex items-center gap-2">
-            <RiskBadge risk={data.risk} />
-            {data.priority === 'high' && (
+            <RiskBadge risk={view.risk} />
+            {view.priority === 'high' && (
               <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">
                 High Priority
               </span>
             )}
+            {services.recovery.runCase && (
+              <Button onClick={runRecovery} disabled={running}>
+                {running ? 'Running…' : 'Run Recovery'}
+              </Button>
+            )}
             <Link
-              to={`/customers/${data.customerId}`}
+              to={`/customers/${view.customerId}`}
               className="text-xs font-semibold text-podium-700 hover:underline"
             >
               Customer 360
@@ -120,43 +151,43 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
       <div className="mb-4 flex flex-wrap items-end gap-4 rounded-xl border border-ink-200 bg-white p-4 shadow-soft">
         <div>
           <div className="text-xs text-ink-400">Amount at Risk</div>
-          <div className="text-2xl font-semibold">{formatINR(data.amountAtRisk)}</div>
-          {data.daysOverdue !== undefined && (
-            <div className="text-xs text-ink-500">{data.daysOverdue} days overdue</div>
+          <div className="text-2xl font-semibold">{formatINR(view.amountAtRisk)}</div>
+          {view.daysOverdue !== undefined && view.daysOverdue !== null && (
+            <div className="text-xs text-ink-500">{view.daysOverdue} days overdue</div>
           )}
         </div>
         <div className="grid flex-1 grid-cols-2 gap-3 md:grid-cols-4">
           <div>
             <div className="text-xs text-ink-400">Expected Recovery</div>
             <div className="text-lg font-semibold">
-              {formatINR(data.expectedRecovery ?? data.expectedValue)}
+              {formatINR(view.expectedRecovery ?? view.expectedValue)}
             </div>
           </div>
           <div>
             <div className="text-xs text-ink-400">Remaining</div>
             <div className="text-lg font-semibold">
-              {formatINR(data.remaining ?? data.amountAtRisk)}
+              {formatINR(view.remaining ?? view.amountAtRisk)}
             </div>
           </div>
           <div>
             <div className="text-xs text-ink-400">Current State</div>
             <div className="mt-1">
-              <StatusBadge state={data.state} />
+              <StatusBadge state={view.state} />
             </div>
           </div>
           <div>
             <div className="text-xs text-ink-400">Lane</div>
             <div className="mt-1">
-              <LaneBadge lane={data.lane} />
+              <LaneBadge lane={view.lane} />
             </div>
           </div>
         </div>
       </div>
 
-      {data.pipeline && (
+      {view.pipeline && (
         <Panel className="mb-4" title="Recovery Decision Pipeline" subtitle="Click a stage for details">
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {data.pipeline.map((step, idx) => (
+            {view.pipeline.map((step, idx) => (
               <button
                 key={step.stage}
                 type="button"
@@ -179,16 +210,16 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
             ))}
           </div>
           <div className="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-600">
-            {data.pipeline.find((p) => p.stage === stage)?.summary}
+            {view.pipeline.find((p) => p.stage === stage)?.summary}
           </div>
         </Panel>
       )}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Context">
-          {data.context ? (
+          {view.context ? (
             <dl className="grid grid-cols-2 gap-3 text-sm">
-              {Object.entries(data.context).map(([k, v]) => (
+              {Object.entries(view.context).map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-xs text-ink-400">{k}</dt>
                   <dd className="mt-0.5 font-medium text-ink-800">{v}</dd>
@@ -305,25 +336,25 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
         </Panel>
 
         <Panel title="Outcome">
-          {data.outcome ? (
+          {view.outcome ? (
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <dt className="text-xs text-ink-400">Action</dt>
-                <dd className="font-medium">{data.outcome.action}</dd>
+                <dd className="font-medium">{view.outcome.action}</dd>
               </div>
               <div>
                 <dt className="text-xs text-ink-400">Status</dt>
                 <dd>
-                  <StatusBadge state={data.outcome.status} />
+                  <StatusBadge state={view.outcome.status} />
                 </dd>
               </div>
               <div className="col-span-2">
                 <dt className="text-xs text-ink-400">Outcome</dt>
-                <dd className="font-medium">{data.outcome.outcome}</dd>
+                <dd className="font-medium">{view.outcome.outcome}</dd>
               </div>
               <div>
                 <dt className="text-xs text-ink-400">Recovered</dt>
-                <dd className="text-lg font-semibold">{formatINR(data.outcome.recovered)}</dd>
+                <dd className="text-lg font-semibold">{formatINR(view.outcome.recovered)}</dd>
               </div>
             </dl>
           ) : (
@@ -332,36 +363,36 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
         </Panel>
 
         <Panel title="Learning Signal">
-          {data.learning ? (
+          {view.learning ? (
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="text-xs text-ink-400">Action</div>
-                  <div className="font-medium">{data.learning.action}</div>
+                  <div className="font-medium">{view.learning.action}</div>
                 </div>
                 <div>
                   <div className="text-xs text-ink-400">Observations</div>
-                  <div className="font-medium">{data.learning.observations}</div>
+                  <div className="font-medium">{view.learning.observations}</div>
                 </div>
                 <div>
                   <div className="text-xs text-ink-400">Observed success</div>
                   <div className="font-medium">
-                    {formatPercent(data.learning.observedSuccess * 100, 0)}
+                    {formatPercent(view.learning.observedSuccess * 100, 0)}
                   </div>
                 </div>
                 <div>
                   <div className="text-xs text-ink-400">Prediction</div>
                   <div className="font-medium">
-                    {formatPercent(data.learning.prediction * 100, 0)}
+                    {formatPercent(view.learning.prediction * 100, 0)}
                   </div>
                 </div>
                 <div>
                   <div className="text-xs text-ink-400">Confidence</div>
-                  <div className="font-medium uppercase">{data.learning.confidence}</div>
+                  <div className="font-medium uppercase">{view.learning.confidence}</div>
                 </div>
                 <div>
                   <div className="text-xs text-ink-400">Outcome</div>
-                  <div className="font-medium">{data.learning.outcome}</div>
+                  <div className="font-medium">{view.learning.outcome}</div>
                 </div>
               </div>
               <Link to="/learning" className="text-xs font-semibold text-podium-700 hover:underline">

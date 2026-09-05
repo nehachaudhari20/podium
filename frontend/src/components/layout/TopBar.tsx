@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Bell, Menu, Search } from 'lucide-react'
-import { services } from '@/services'
+import { services, isApiMode } from '@/services'
 import type { AppNotification, SearchResult } from '@/types/domain'
 import { formatINR } from '@/lib/format'
 import { cn } from '@/lib/format'
@@ -131,8 +131,14 @@ export function TopBar({ onMenu }: { onMenu: () => void }) {
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="hidden items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700 sm:inline-flex">
-          Test Mode
+        <span
+          className={`hidden items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide sm:inline-flex ${
+            isApiMode()
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-amber-200 bg-amber-50 text-amber-700'
+          }`}
+        >
+          {isApiMode() ? 'Live API' : 'Test Mode'}
         </span>
 
         <div className="relative">

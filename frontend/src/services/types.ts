@@ -39,6 +39,10 @@ export interface RecoveryService {
   listCases(filters?: RecoveryFilters): Promise<Paginated<RecoveryCase>>
   getCase(id: string): Promise<RecoveryCase | null>
   getActiveCases(): Promise<RecoveryCase[]>
+  runCase?(
+    id: string,
+    options?: { reset?: boolean; intelligence?: 'deterministic' | 'hybrid' | 'gemini' },
+  ): Promise<{ run: unknown; case: RecoveryCase }>
 }
 
 export interface CustomerService {
@@ -73,6 +77,15 @@ export interface RiskService {
 export interface SimulationService {
   listScenarios(): Promise<SimulationScenario[]>
   getScenario(id: string): Promise<SimulationScenario | null>
+  runScenario?(
+    id: string,
+    options?: { reset?: boolean; intelligence?: 'deterministic' | 'hybrid' | 'gemini' },
+  ): Promise<{
+    scenarioId: string
+    runs: unknown[]
+    steps: SimulationScenario['steps']
+    customer: unknown
+  }>
 }
 
 export interface AuditService {

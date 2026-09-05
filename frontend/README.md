@@ -16,13 +16,54 @@ Production-grade merchant command center for Adaptive Revenue Recovery Intellige
 ```text
 UI Components
   → Frontend services (`src/services`)
-    → Mock implementations (Phase 9)
-    → Real API adapters (Phase 10)
+    → Api* implementations when VITE_DATA_MODE=api  (default)
+    → Mock* implementations when VITE_DATA_MODE=mock
+      → FastAPI thin adapter
+        → Existing Podium Python recovery engine
 ```
 
-Domain types live in `src/types/domain.ts`. Seeded data lives in `src/mock/`.
+Domain types live in `src/types/domain.ts`. Mock seed data lives in `src/mock/` (mock mode only).
 
 UI components must not import mock data directly — always go through services.
+
+## Environment
+
+Copy `.env.example` to `.env`:
+
+```bash
+VITE_DATA_MODE=api
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+| Value | Behavior |
+|---|---|
+| `api` (default) | Live backend via FastAPI |
+| `mock` | Phase 9 seeded demo data (no backend required) |
+
+Top bar shows **Live API** or **Test Mode** accordingly. Do not mix sources on one screen.
+
+## Run with backend (Phase 10)
+
+Terminal 1 — API:
+
+```bash
+cd backend
+pip install -e ".[dev]"
+podium-api
+# or: uvicorn recovery.api.main:app --reload --port 8000
+```
+
+Terminal 2 — UI:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend: http://localhost:5173  
+Backend: http://127.0.0.1:8000  
+Health: http://127.0.0.1:8000/api/health
 
 ## Scripts
 
@@ -38,26 +79,34 @@ npm run lint
 
 - `/` Overview
 - `/recovery` Recovery workspace
-- `/recovery/:caseId` Case detail / Recovery Brain
+- `/recovery/:caseId` Case detail / Recovery Brain (**Run Recovery** calls backend)
 - `/customers` Customer directory
 - `/customers/:customerId` Customer 360
 - `/revenue-risks` Revenue risks + capacity
 - `/learning` Learning center
 - `/analytics` Analytics
-- `/simulator` Scenario lab
+- `/simulator` Scenario lab (**Run on Backend**)
 - `/audit` Audit log
-- `/settings` Settings
+- `/settings` Settings (read-only policy from YAML in API mode)
 
-## Hero scenario
+## Hero scenario (live backend)
 
-Priya Nair (`C1029`) with:
+API mode uses the real backend hero:
 
-- Subscription ₹2,499
-- Checkout ₹7,400
-- Receivable ₹38,000
-- Total ₹47,899
+- Customer: **NovaTech Solutions Pvt Ltd** (`cust_hero_001`)
+- Subscription `case_hero_sub_001` — ₹5,000
+- Checkout `case_hero_chk_001` — ₹20,000
+- Receivable `case_hero_inv_001` — ₹80,000
+- Total — ₹1,05,000
 
-## Notes
+Mock mode still uses the Phase 9 Priya Nair seed for frontend-only demos.
 
-- Top bar shows **Test Mode** while services are mock-backed.
-- No backend API integration in this phase.
+## End-to-end demo
+
+1. Start backend + frontend (API mode)
+2. Open Overview — live KPIs
+3. Recovery → open a hero case
+4. Inspect diagnosis / candidates / Why this action?
+5. Click **Run Recovery** — Python agentic loop executes
+6. Outcome + audit update from backend
+7. Customer 360 + Learning + Audit reflect the run
